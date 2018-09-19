@@ -754,7 +754,7 @@ vAPI.setIcon = (function() {
     var onTabReady = function(tab, state, badge, parts) {
         if ( vAPI.lastError() || !tab ) { return; }
 
-        // Beware: msedge modifies the icon data object passed as argument,
+        // Beware: Edge modifies the icon data object passed as argument,
         // hence why we need to pass a copy since we are going to reuse the
         // icon data object.
         if ( browserAction.setIcon !== undefined ) {
