@@ -626,6 +626,9 @@ var renderOnce = function() {
     // Be prepared to fall into responsive mode if ever it is found the
     // viewport is not a perfect match for the popup panel.
 
+    // Resize handler is sort of broken on Edge, just avoid for now.
+    if ( vAPI.webextFlavor.soup.has('edge') ) { return; }
+
     let resizeTimer;
     let resize = function() {
         resizeTimer = undefined;

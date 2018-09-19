@@ -165,7 +165,11 @@ let decodeValue = function(key, inputArray) {
 
 return {
     encode: function(key, dataIn) {
-        if ( typeof dataIn !== 'string' || dataIn.length < 4096 ) {
+        if (
+            typeof dataIn !== 'string' ||
+            dataIn.length < 4096 ||
+            typeof TextEncoder !== 'function'
+        ) {
             return Promise.resolve({ key, data: dataIn });
         }
         ttlManage(1);

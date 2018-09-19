@@ -623,10 +623,23 @@ vAPI.tabs.injectScript = function(tabId, details, callback) {
             callback();
         }
     };
-    if ( tabId ) {
-        chrome.tabs.executeScript(toChromiumTabId(tabId), details, onScriptExecuted);
-    } else {
-        chrome.tabs.executeScript(details, onScriptExecuted);
+
+    // This may throw on some platforms due to incomplete support of API.
+    // https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/tabs/executeScript#Browser_compatibility
+    try {
+        if ( tabId ) {
+            chrome.tabs.executeScript(
+                toChromiumTabId(tabId),
+                details,
+                onScriptExecuted
+            );
+        } else {
+            chrome.tabs.executeScript(
+                details,
+                onScriptExecuted
+            );
+        }
+    } catch(ex) {
     }
 };
 
@@ -653,12 +666,8 @@ vAPI.setIcon = (function() {
             chrome.runtime.getManifest().browser_action.default_title +
             ' ({badge})';
     let icons = [
-        {
-            path: { '16': 'img/icon_16-off.png', '32': 'img/icon_32-off.png' }
-        },
-        {
-            path: { '16': 'img/icon_16.png', '32': 'img/icon_32.png' }
-        }
+        { key: 'path', path: {} },
+        { key: 'path', path: {} }
     ];
 
     (function() {
@@ -669,6 +678,19 @@ vAPI.setIcon = (function() {
             browserAction.setBadgeBackgroundColor({
                 color: [ 0x66, 0x66, 0x66, 0xFF ]
             });
+        }
+
+        // First, copy browser icon information from the manifest -- which may
+        // be different from one platform to another.
+        let defaultIcons = browser.runtime.getManifest().browser_action.default_icon;
+        for ( let key in defaultIcons ) {
+            let path = defaultIcons[key];
+            icons[1].path[key] = path;
+            let pos = path.lastIndexOf('.');
+            if ( pos !== -1 ) {
+                path = path.slice(0, pos) + '-off' + path.slice(pos);
+            }
+            icons[0].path[key] = path;
         }
 
         // As of 2018-05, benchmarks show that only Chromium benefits for sure
@@ -718,6 +740,7 @@ vAPI.setIcon = (function() {
             for ( let i = 0; i < iconData.length; i++ ) {
                 if ( iconData[i] ) {
                     icons[i] = { imageData: iconData[i] };
+                    icons[i].key = 'imageData';
                 }
             }
         };
@@ -731,11 +754,16 @@ vAPI.setIcon = (function() {
     var onTabReady = function(tab, state, badge, parts) {
         if ( vAPI.lastError() || !tab ) { return; }
 
+        // Beware: msedge modifies the icon data object passed as argument,
+        // hence why we need to pass a copy since we are going to reuse the
+        // icon data object.
         if ( browserAction.setIcon !== undefined ) {
             if ( parts === undefined || (parts & 0x01) !== 0 ) {
-                browserAction.setIcon(
-                    Object.assign({ tabId: tab.id }, icons[state])
-                );
+                let icon = icons[state];
+                browserAction.setIcon({
+                    tabId: tab.id,
+                    [icon.key]: Object.assign({}, icon[icon.key])
+                });
             }
             browserAction.setBadgeText({ tabId: tab.id, text: badge });
         }
@@ -1017,6 +1045,9 @@ vAPI.messaging.broadcast = function(message) {
 // - prevent web pages from interfering with uBO's element picker
 
 (function() {
+    // https://github.com/NanoAdblocker/NanoCore/issues/40
+    if ( vAPI.webextFlavor.soup.has('edge') ) { return; }
+
     vAPI.warSecret =
         Math.floor(Math.random() * 982451653 + 982451653).toString(36) +
         Math.floor(Math.random() * 982451653 + 982451653).toString(36);

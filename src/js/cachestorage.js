@@ -40,10 +40,13 @@
 
 µBlock.cacheStorage = (function() {
 
-    // Firefox-specific: we use indexedDB because chrome.storage.local() has
-    // poor performance in Firefox. See:
+    // Firefox/Edge: we use indexedDB because browser.storage.local() has
+    // poor performance in Firefox, and limitations on Edge. See:
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1371255
-    if ( vAPI.webextFlavor.soup.has('firefox') === false ) {
+    if (
+        vAPI.webextFlavor.soup.has('firefox') === false &&
+        vAPI.webextFlavor.soup.has('edge') === false
+    ) {
         return vAPI.cacheStorage;
     }
 
@@ -252,7 +255,18 @@
                 callback(dbByteLength);
             });
         }
-        let textEncoder = new TextEncoder();
+        // Edge does not support TextEncoder:
+        // https://developer.mozilla.org/en-US/docs/Web/API/TextEncoder#Browser_compatibility
+        let textEncoder;
+        if ( typeof TextEncoder === 'function' ) {
+            textEncoder = new TextEncoder();
+        } else {
+            textEncoder = {
+                encode:  function(s) {
+                    return { byteLength: s.length };
+                }
+            };
+        }
         let totalByteLength = 0;
         visitAllFromDb(entry => {
             if ( entry === undefined ) {

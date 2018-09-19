@@ -28,13 +28,20 @@
 /******************************************************************************/
 /******************************************************************************/
 
+var warURLToSecretURL = function(url) {
+    if ( vAPI.warSecret ) {
+        url += '?secret=' + vAPI.warSecret;
+    }
+    return url;
+};
+
 var warResolve = (function() {
     var warPairs = [];
 
     var onPairsReady = function() {
-        var reng = µBlock.redirectEngine;
-        for ( var i = 0; i < warPairs.length; i += 2 ) {
-            var resource = reng.resources.get(warPairs[i+0]);
+        let reng = µBlock.redirectEngine;
+        for ( let i = 0; i < warPairs.length; i += 2 ) {
+            let resource = reng.resources.get(warPairs[i+0]);
             if ( resource === undefined ) { continue; }
             resource.warURL = vAPI.getURL(
                 '/web_accessible_resources/' + warPairs[i+1]
@@ -49,14 +56,14 @@ var warResolve = (function() {
         }
 
         var onPairsLoaded = function(details) {
-            var marker = '>>>>>';
-            var pos = details.content.indexOf(marker);
+            let marker = '>>>>>';
+            let pos = details.content.indexOf(marker);
             if ( pos === -1 ) { return; }
-            var pairs = details.content.slice(pos + marker.length)
+            let pairs = details.content.slice(pos + marker.length)
                                       .trim()
                                       .split('\n');
             if ( (pairs.length & 1) !== 0 ) { return; }
-            for ( var i = 0; i < pairs.length; i++ ) {
+            for ( let i = 0; i < pairs.length; i++ ) {
                 pairs[i] = pairs[i].trim();
             }
             warPairs = pairs;
@@ -64,7 +71,7 @@ var warResolve = (function() {
         };
 
         µBlock.assets.fetchText(
-            '/web_accessible_resources/imported.txt?secret=' + vAPI.warSecret,
+            warURLToSecretURL('/web_accessible_resources/imported.txt'),
             onPairsLoaded
         );
     };
@@ -105,7 +112,7 @@ RedirectEntry.prototype.toURL = function(details) {
             details.requestURL.startsWith('https:')
         )
     ) {
-        return this.warURL + '?secret=' + vAPI.warSecret;
+        return warURLToSecretURL(this.warURL);
     }
     if ( this.data.startsWith('data:') === false ) {
         if ( this.mime.indexOf(';') === -1 ) {

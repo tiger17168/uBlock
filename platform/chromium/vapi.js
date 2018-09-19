@@ -27,6 +27,14 @@
 
 /******************************************************************************/
 
+if ( self.browser instanceof Object ) {
+    self.chrome = self.browser;
+} else {
+    self.browser = self.chrome;
+}
+
+/******************************************************************************/
+
 // https://bugzilla.mozilla.org/show_bug.cgi?id=1408996#c9
 var vAPI = window.vAPI; // jshint ignore:line
 
