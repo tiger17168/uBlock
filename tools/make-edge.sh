@@ -23,7 +23,6 @@ cp platform/chromium/*.json $DES/
 cp LICENSE.txt              $DES/
 
 cp platform/edge/*.json     $DES/
-cp platform/edge/*.js       $DES/js/
 
 echo "*** uBlock0.edge: concatenating content scripts"
 cat $DES/js/vapi-usercss.js > /tmp/contentscript.js
