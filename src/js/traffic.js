@@ -1,6 +1,6 @@
 /*******************************************************************************
 
-    uBlock Origin - a browser extension to block requests.
+    uBlock Origin - a comprehensive, efficient content blocker
     Copyright (C) 2014-present Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
@@ -19,48 +19,29 @@
     Home: https://github.com/gorhill/uBlock
 */
 
-'use strict';
+/* global browser */
 
 /******************************************************************************/
 
-import htmlFilteringEngine from './html-filtering.js';
-import httpheaderFilteringEngine from './httpheader-filtering.js';
-import logger from './logger.js';
-import scriptletFilteringEngine from './scriptlet-filtering.js';
-import staticNetFilteringEngine from './static-net-filtering.js';
-import textEncode from './text-encode.js';
-import µb from './background.js';
-
+import * as fc from  './filtering-context.js';
+import * as sfp from './static-filtering-parser.js';
 import {
     sessionFirewall,
     sessionSwitches,
     sessionURLFiltering,
 } from './filtering-engines.js';
-
-import {
-    entityFromDomain,
-    isNetworkURI,
-} from './uri-utils.js';
+import htmlFilteringEngine from './html-filtering.js';
+import httpheaderFilteringEngine from './httpheader-filtering.js';
+import { isNetworkURI } from './uri-utils.js';
+import logger from './logger.js';
+import staticNetFilteringEngine from './static-net-filtering.js';
+import textEncode from './text-encode.js';
+import µb from './background.js';
 
 /******************************************************************************/
 
-// Platform-specific behavior.
-
-// https://github.com/uBlockOrigin/uBlock-issues/issues/42
-// https://bugzilla.mozilla.org/show_bug.cgi?id=1376932
-//   Add proper version number detection once issue is fixed in Firefox.
-let dontCacheResponseHeaders =
-    vAPI.webextFlavor.soup.has('firefox');
-
-// The real actual webextFlavor value may not be set in stone, so listen
-// for possible future changes.
-window.addEventListener('webextFlavor', function() {
-    dontCacheResponseHeaders =
-        vAPI.webextFlavor.soup.has('firefox');
-}, { once: true });
-
-// https://github.com/uBlockOrigin/uBlock-issues/issues/1553
-const supportsFloc = document.interestCohort instanceof Function;
+// For platform-specific behavior.
+const isGecko = vAPI.webextFlavor.isGecko;
 
 /******************************************************************************/
 
@@ -72,7 +53,7 @@ const patchLocalRedirectURL = url => url.charCodeAt(0) === 0x2F /* '/' */
 
 // Intercept and filter web requests.
 
-const onBeforeRequest = function(details) {
+function onBeforeRequest(details) {
     const fctxt = µb.filteringContext.fromWebrequestDetails(details);
 
     // Special handling for root document.
@@ -137,7 +118,7 @@ const onBeforeRequest = function(details) {
 
 /******************************************************************************/
 
-const onBeforeRootFrameRequest = function(fctxt) {
+function onBeforeRootFrameRequest(fctxt) {
     const requestURL = fctxt.url;
 
     // Special handling for root document.
@@ -149,7 +130,7 @@ const onBeforeRootFrameRequest = function(fctxt) {
     let logData;
 
     // If the site is whitelisted, disregard strict blocking
-    const trusted = µb.getNetFilteringSwitch(requestURL) === false;
+    const trusted = µb.isTrustedSite(requestURL);
     if ( trusted ) {
         result = 2;
         if ( logger.enabled ) {
@@ -196,22 +177,21 @@ const onBeforeRootFrameRequest = function(fctxt) {
     }
 
     if ( logger.enabled ) {
-        fctxt.setFilter(logData);
+        fctxt.setRealm('network').setFilter(logData);
     }
 
     // https://github.com/uBlockOrigin/uBlock-issues/issues/760
     //   Redirect non-blocked request?
-    if (
-        result !== 1 &&
-        trusted === false &&
-        pageStore !== null &&
-        staticNetFilteringEngine.hasQuery(fctxt)
-    ) {
-        pageStore.redirectNonBlockedRequest(fctxt);
+    if ( trusted === false && pageStore !== null ) {
+        if ( result !== 1 ) {
+            pageStore.redirectNonBlockedRequest(fctxt);
+        } else {
+            pageStore.skipMainDocument(fctxt, true);
+        }
     }
 
     if ( logger.enabled ) {
-        fctxt.setRealm('network').toLogger();
+        fctxt.toLogger();
     }
 
     // Redirected
@@ -225,25 +205,39 @@ const onBeforeRootFrameRequest = function(fctxt) {
     if ( result !== 1 ) { return; }
 
     // No log data means no strict blocking (because we need to report why
-    // the blocking occurs.
+    // the blocking occurs
     if ( logData === undefined  ) { return; }
 
     // Blocked
 
-    const query = encodeURIComponent(JSON.stringify({
+    let reason = logData.reason;
+
+    // Find out the URL navigated to should the document not be strict-blocked
+    pageStore.skipMainDocument(fctxt, false);
+
+    if ( reason === undefined && Array.isArray(fctxt.filter) ) {
+        const filter = fctxt.filter.find(a => a.reason !== undefined);
+        reason = filter?.reason;
+    }
+
+    const query = {
         url: requestURL,
-        hn: requestHostname,
         dn: fctxt.getDomain() || requestHostname,
-        fs: logData.raw
-    }));
+        fs: logData.raw,
+        hn: requestHostname,
+        to: fctxt.redirectURL || '',
+    };
+    if ( reason ) {
+        query.reason = reason;
+    }
 
     vAPI.tabs.replace(
         fctxt.tabId,
-        vAPI.getURL('document-blocked.html?details=') + query
+        `${vAPI.getURL('document-blocked.html?details=')}${encodeURIComponent(JSON.stringify(query))}`
     );
 
     return { cancel: true };
-};
+}
 
 /******************************************************************************/
 
@@ -273,7 +267,7 @@ const onBeforeRootFrameRequest = function(fctxt) {
 //         |   2    |   rg   |   rg   |   rs   |   rs   |
 // --------+--------+--------+--------+--------+--------+
 
-const shouldStrictBlock = function(fctxt, loggerEnabled) {
+function shouldStrictBlock(fctxt, loggerEnabled) {
     const snfe = staticNetFilteringEngine;
 
     // Explicit filtering: `document` option
@@ -333,7 +327,7 @@ const shouldStrictBlock = function(fctxt, loggerEnabled) {
     //         |   2    |   -    |   -    |   -    |   x    |
     // --------+--------+--------+--------+--------+--------+
     return { result: rs, logData: lds };
-};
+}
 
 /******************************************************************************/
 
@@ -343,7 +337,7 @@ const shouldStrictBlock = function(fctxt, loggerEnabled) {
 //   Do not strict-block if the filter pattern does not contain at least one
 //   token character.
 
-const validateStrictBlock = function(fctxt, logData) {
+function validateStrictBlock(fctxt, logData) {
     if ( typeof logData.regex !== 'string' ) { return false; }
     if ( typeof logData.raw === 'string' && /\w/.test(logData.raw) === false ) {
         return false;
@@ -365,13 +359,13 @@ const validateStrictBlock = function(fctxt, logData) {
     const end = match.index + match[0].length - hnpos - hnlen;
     return end === 0 || end === 1 ||
            end === 2 && url.charCodeAt(hnpos + hnlen) === 0x2E /* '.' */;
-};
+}
 
 /******************************************************************************/
 
 // Intercept and filter behind-the-scene requests.
 
-const onBeforeBehindTheSceneRequest = function(fctxt) {
+function onBeforeBehindTheSceneRequest(fctxt) {
     const pageStore = µb.pageStoreFromTabId(fctxt.tabId);
     if ( pageStore === null ) { return; }
 
@@ -403,10 +397,7 @@ const onBeforeBehindTheSceneRequest = function(fctxt) {
         // https://github.com/uBlockOrigin/uBlock-issues/issues/1478
         //   Also remove potential redirection when request is to be
         //   whitelisted.
-        if (
-            result === 1 &&
-            µb.getNetFilteringSwitch(fctxt.tabOrigin) === false
-        ) {
+        if ( result === 1 && µb.isTrustedSite(fctxt.tabOrigin) ) {
             result = 2;
             fctxt.redirectURL = undefined;
             fctxt.filter = { engine: 'u', result: 2, raw: 'whitelisted' };
@@ -431,7 +422,7 @@ const onBeforeBehindTheSceneRequest = function(fctxt) {
     if ( result === 1 ) {
         return { cancel: true };
     }
-};
+}
 
 // https://github.com/uBlockOrigin/uBlock-issues/issues/1204
 //   Report the tabless network requests to all page stores matching the
@@ -440,22 +431,22 @@ const onBeforeBehindTheSceneRequest = function(fctxt) {
 //   request.
 
 {
+    const pageStores = new Set();
     let hostname = '';
-    let pageStores = new Set();
     let pageStoresToken = 0;
-    let gcTimer;
 
     const reset = function() {
         hostname = '';
-        pageStores = new Set();
+        pageStores.clear();
         pageStoresToken = 0;
     };
 
     const gc = ( ) => {
-        gcTimer = undefined;
         if ( pageStoresToken !== µb.pageStoresToken ) { return reset(); }
-        gcTimer = vAPI.setTimeout(gc, 30011);
+        gcTimer.on(30011);
     };
+
+    const gcTimer = vAPI.defer.create(gc);
 
     onBeforeBehindTheSceneRequest.journalAddRequest = (fctxt, result) => {
         const docHostname = fctxt.getDocHostname();
@@ -464,16 +455,13 @@ const onBeforeBehindTheSceneRequest = function(fctxt) {
             pageStoresToken !== µb.pageStoresToken
         ) {
             hostname = docHostname;
-            pageStores = new Set();
+            pageStores.clear();
             for ( const pageStore of µb.pageStores.values() ) {
                 if ( pageStore.tabHostname !== docHostname ) { continue; }
                 pageStores.add(pageStore);
             }
             pageStoresToken = µb.pageStoresToken;
-            if ( gcTimer !== undefined ) {
-                clearTimeout(gcTimer);
-            }
-            gcTimer = vAPI.setTimeout(gc, 30011);
+            gcTimer.offon(30011);
         }
         for ( const pageStore of pageStores ) {
             pageStore.journalAddRequest(fctxt, result);
@@ -489,15 +477,7 @@ const onBeforeBehindTheSceneRequest = function(fctxt) {
 // - HTML filtering (requires ability to modify response body)
 // - CSP injection
 
-const onHeadersReceived = function(details) {
-    // https://github.com/uBlockOrigin/uBlock-issues/issues/610
-    //   Process behind-the-scene requests in a special way.
-    if (
-        details.tabId < 0 &&
-        normalizeBehindTheSceneResponseHeaders(details) === false
-    ) {
-        return;
-    }
+function onHeadersReceived(details) {
 
     const fctxt = µb.filteringContext.fromWebrequestDetails(details);
     const isRootDoc = fctxt.itype === fctxt.MAIN_FRAME;
@@ -507,9 +487,15 @@ const onHeadersReceived = function(details) {
         if ( isRootDoc === false ) { return; }
         pageStore = µb.bindTabToPageStore(fctxt.tabId, 'beforeRequest');
     }
-    if ( pageStore.getNetFilteringSwitch(fctxt) === false ) { return; }
+    if ( pageStore.isTrusted(fctxt) ) { return; }
 
-    if ( fctxt.itype === fctxt.IMAGE || fctxt.itype === fctxt.MEDIA ) {
+    // To enforce strict-blocking with ipaddress option
+    if ( isRootDoc && fctxt.ipaddress ) {
+        const r = onBeforeRootFrameRequest(fctxt);
+        if ( r ) { return ( r ); }
+    }
+
+    if ( (fctxt.itype & foilLargeMediaElement.TYPE_BITS) !== 0 ) {
         const result = foilLargeMediaElement(details, fctxt, pageStore);
         if ( result !== undefined ) { return result; }
     }
@@ -520,8 +506,11 @@ const onHeadersReceived = function(details) {
     const { responseHeaders } = details;
     if ( Array.isArray(responseHeaders) === false ) { return; }
 
-    if ( isRootDoc === false && µb.hiddenSettings.filterOnHeaders === true ) {
-        const result = pageStore.filterOnHeaders(fctxt, responseHeaders);
+    if ( isRootDoc === false ) {
+        const result = pageStore.filterOnHeaders(fctxt,
+            responseHeaders,
+            requestHeadersManager.lookup(details)
+        );
         if ( result !== 0 ) {
             if ( logger.enabled ) {
                 fctxt.setRealm('network').toLogger();
@@ -533,35 +522,60 @@ const onHeadersReceived = function(details) {
         }
     }
 
-    if ( isRootDoc === false && fctxt.itype !== fctxt.SUB_FRAME ) { return; }
+    const mime = mimeFromHeaders(responseHeaders);
 
     // https://github.com/gorhill/uBlock/issues/2813
     //   Disable the blocking of large media elements if the document is itself
     //   a media element: the resource was not prevented from loading so no
     //   point to further block large media elements for the current document.
     if ( isRootDoc ) {
-        const contentType = headerValueFromName('content-type', responseHeaders);
-        if ( reMediaContentTypes.test(contentType) ) {
+        if ( reMediaContentTypes.test(mime) ) {
             pageStore.allowLargeMediaElementsUntil = 0;
             // Fall-through: this could be an SVG document, which supports
             // script tags.
         }
     }
 
-    // At this point we have a HTML document.
-
-    const filteredHTML =
-        µb.canFilterResponseData && filterDocument(fctxt, details) === true;
+    if ( bodyFilterer.canFilter(fctxt, details) ) {
+        const jobs = [];
+        // `replace=` filter option
+        const replaceDirectives =
+            staticNetFilteringEngine.matchAndFetchModifiers(fctxt, 'replace');
+        if ( replaceDirectives ) {
+            jobs.push({
+                fn: textResponseFilterer,
+                args: [ replaceDirectives ],
+            });
+        }
+        // html filtering
+        if ( mime === 'text/html' || mime === 'application/xhtml+xml' ) {
+            const selectors = htmlFilteringEngine.retrieve(fctxt);
+            if ( selectors ) {
+                jobs.push({
+                    fn: htmlResponseFilterer,
+                    args: [ selectors ],
+                });
+            }
+        }
+        if ( jobs.length !== 0 ) {
+            bodyFilterer.doFilter(details.requestId, fctxt, jobs);
+        }
+    }
 
     let modifiedHeaders = false;
     if ( httpheaderFilteringEngine.apply(fctxt, responseHeaders) === true ) {
         modifiedHeaders = true;
     }
-    if ( injectCSP(fctxt, pageStore, responseHeaders) === true ) {
-        modifiedHeaders = true;
-    }
-    if ( supportsFloc && foilFloc(fctxt, responseHeaders) ) {
-        modifiedHeaders = true;
+
+    // https://github.com/uBlockOrigin/uBlock-issues/issues/229#issuecomment-2220354261
+    // Inject CSP/PP in document resource only
+    if ( fctxt.isDocument() ) {
+        if ( injectCSP(fctxt, pageStore, responseHeaders) === true ) {
+            modifiedHeaders = true;
+        }
+        if ( injectPP(fctxt, pageStore, responseHeaders) === true ) {
+            modifiedHeaders = true;
+        }
     }
 
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1376932
@@ -570,7 +584,7 @@ const onHeadersReceived = function(details) {
     // https://github.com/uBlockOrigin/uBlock-issues/issues/229
     //   Use `no-cache` instead of `no-cache, no-store, must-revalidate`, this
     //   allows Firefox's offline mode to work as expected.
-    if ( (filteredHTML || modifiedHeaders) && dontCacheResponseHeaders ) {
+    if ( modifiedHeaders && isGecko ) {
         const cacheControl = µb.hiddenSettings.cacheControlForFirefox1376932;
         if ( cacheControl !== 'unset' ) {
             let i = headerIndexFromName('cache-control', responseHeaders);
@@ -586,300 +600,413 @@ const onHeadersReceived = function(details) {
     if ( modifiedHeaders ) {
         return { responseHeaders };
     }
-};
+}
 
-const reMediaContentTypes = /^(?:audio|image|video)\//;
+const reMediaContentTypes = /^(?:audio|image|video)\/|(?:\/ogg)$/;
 
 /******************************************************************************/
 
-// https://github.com/uBlockOrigin/uBlock-issues/issues/610
-
-const normalizeBehindTheSceneResponseHeaders = function(details) {
-    if ( details.type !== 'xmlhttprequest' ) { return false; }
-    const headers = details.responseHeaders;
-    if ( Array.isArray(headers) === false ) { return false; }
-    const contentType = headerValueFromName('content-type', headers);
-    if ( contentType === '' ) { return false; }
-    if ( reMediaContentTypes.test(contentType) === false ) { return false; }
-    if ( contentType.startsWith('image') ) {
-        details.type = 'image';
-    } else {
-        details.type = 'media';
-    }
-    return true;
+const mimeFromHeaders = headers => {
+    if ( Array.isArray(headers) === false ) { return ''; }
+    return mimeFromContentType(headerValueFromName('content-type', headers));
 };
+
+const mimeFromContentType = contentType => {
+    const match = reContentTypeMime.exec(contentType);
+    if ( match === null ) { return ''; }
+    return match[0].toLowerCase();
+};
+
+const reContentTypeMime = /^[^;]+/i;
+
+/******************************************************************************/
+
+function textResponseFilterer(session, directives) {
+    const applied = [];
+    for ( const directive of directives ) {
+        if ( directive.refs instanceof Object === false ) { continue; }
+        if ( directive.result !== 1 ) {
+            applied.push(directive);
+            continue;
+        }
+        const { refs } = directive;
+        if ( refs.$cache !== null ) {
+            const { jsonp } = refs.$cache;
+            if ( jsonp && jsonp.apply === undefined ) {
+                refs.$cache = null;
+            }
+        }
+        if ( refs.$cache === null ) {
+            refs.$cache = sfp.parseReplaceValue(refs.value);
+        }
+        const cache = refs.$cache;
+        if ( cache === undefined ) { continue; }
+        switch ( cache.type ) {
+        case 'json': {
+            const json = session.getString();
+            let obj;
+            try { obj = JSON.parse(json); } catch { break; }
+            const objAfter = cache.jsonp.apply(obj);
+            if ( objAfter === undefined ) { break; }
+            session.setString(cache.jsonp.toJSON(objAfter));
+            applied.push(directive);
+            break;
+        }
+        case 'jsonl': {
+            const linesBefore = session.getString().split(/\n+/);
+            const linesAfter = [];
+            for ( const lineBefore of linesBefore ) {
+                let obj;
+                try { obj = JSON.parse(lineBefore); } catch { }
+                if ( typeof obj !== 'object' || obj === null ) {
+                    linesAfter.push(lineBefore);
+                    continue;
+                }
+                const objAfter = cache.jsonp.apply(obj);
+                if ( objAfter === undefined ) {
+                    linesAfter.push(lineBefore);
+                    continue;
+                }
+                linesAfter.push(cache.jsonp.toJSON(objAfter));
+            }
+            session.setString(linesAfter.join('\n'));
+            break;
+        }
+        case 'text': {
+            cache.re.lastIndex = 0;
+            if ( cache.re.test(session.getString()) !== true ) { break; }
+            cache.re.lastIndex = 0;
+            session.setString(session.getString().replace(
+                cache.re,
+                cache.replacement
+            ));
+            applied.push(directive);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    if ( applied.length === 0 ) { return; }
+    if ( logger.enabled !== true ) { return; }
+    session.setRealm('network')
+         .pushFilters(applied.map(a => a.logData()))
+         .toLogger();
+}
+
+/******************************************************************************/
+
+function htmlResponseFilterer(session, selectors) {
+    if ( htmlResponseFilterer.domParser === null ) {
+        htmlResponseFilterer.domParser = new DOMParser();
+        htmlResponseFilterer.xmlSerializer = new XMLSerializer();
+    }
+
+    const doc = htmlResponseFilterer.domParser.parseFromString(
+        session.getString(),
+        session.mime
+    );
+
+    if ( selectors === undefined ) { return; }
+    if ( htmlFilteringEngine.apply(doc, session, selectors) !== true ) { return; }
+
+    // https://stackoverflow.com/questions/6088972/get-doctype-of-an-html-as-string-with-javascript/10162353#10162353
+    const doctypeStr = [
+        doc.doctype instanceof Object ?
+            htmlResponseFilterer.xmlSerializer.serializeToString(doc.doctype) + '\n' :
+            '',
+        doc.documentElement.outerHTML,
+    ].join('\n');
+    session.setString(doctypeStr);
+}
+htmlResponseFilterer.domParser = null;
+htmlResponseFilterer.xmlSerializer = null;
+
 
 /*******************************************************************************
 
     The response body filterer is responsible for:
 
+    - Realize static network filter option `replace=`
     - HTML filtering
-
-    In the spirit of efficiency, the response body filterer works this way:
-
-    If:
-        - HTML filtering: no.
-    Then:
-        No response body filtering is initiated.
-
-    If:
-        - HTML filtering: yes.
-    Then:
-        Assemble all response body data into a single buffer. Once all the
-        response data has been received, create a document from it. Then:
-        - Remove all DOM elements matching HTML filters.
-        Then serialize the resulting modified document as the new response
-        body.
 
 **/
 
-const filterDocument = (( ) => {
-    const filterers = new Map();
-    let domParser, xmlSerializer,
-        utf8TextDecoder, textDecoder, textEncoder;
-
-    const textDecode = function(encoding, buffer) {
-        if (
-            textDecoder !== undefined &&
-            textDecoder.encoding !== encoding
-        ) {
-            textDecoder = undefined;
-        }
-        if ( textDecoder === undefined ) {
-            textDecoder = new TextDecoder(encoding);
-        }
-        return textDecoder.decode(buffer);
-    };
-
-    const reContentTypeDocument = /^(?:text\/html|application\/xhtml\+xml)/i;
+const bodyFilterer = (( ) => {
+    const sessions = new Map();
     const reContentTypeCharset = /charset=['"]?([^'" ]+)/i;
+    const otherValidMimes = new Set([
+        'application/dash+xml',
+        'application/javascript',
+        'application/json',
+        'application/mpegurl',
+        'application/vnd.api+json',
+        'application/vnd.apple.mpegurl',
+        'application/vnd.apple.mpegurl.audio',
+        'application/x-javascript',
+        'application/x-mpegurl',
+        'application/xhtml+xml',
+        'application/xml',
+        'audio/mpegurl',
+        'audio/x-mpegurl',
+    ]);
+    const BINARY_TYPES = fc.FONT | fc.IMAGE | fc.MEDIA | fc.WEBSOCKET;
+    const MAX_RESPONSE_BUFFER_LENGTH = 10 * 1024 * 1024;
 
-    const mimeFromContentType = function(contentType) {
-        const match = reContentTypeDocument.exec(contentType);
-        if ( match !== null ) {
-            return match[0].toLowerCase();
+    let textDecoder, textEncoder;
+    let mime = '';
+    let charset = '';
+
+    const contentTypeFromDetails = details => {
+        switch ( details.type ) {
+        case 'script':
+            return 'text/javascript; charset=utf-8';
+        case 'stylesheet':
+            return 'text/css';
+        default:
+            break;
         }
+        return '';
     };
 
-    const charsetFromContentType = function(contentType) {
+    const charsetFromContentType = contentType => {
         const match = reContentTypeCharset.exec(contentType);
-        if ( match !== null ) {
-            return match[1].toLowerCase();
-        }
+        if ( match === null ) { return; }
+        return match[1].toLowerCase();
     };
 
-    const charsetFromDoc = function(doc) {
-        let meta = doc.querySelector('meta[charset]');
-        if ( meta !== null ) {
-            return meta.getAttribute('charset').toLowerCase();
+    const charsetFromMime = mime => {
+        switch ( mime ) {
+        case 'application/xml':
+        case 'application/xhtml+xml':
+        case 'text/html':
+        case 'text/css':
+            return;
+        default:
+            break;
         }
-        meta = doc.querySelector(
-            'meta[http-equiv="content-type" i][content]'
-        );
-        if ( meta !== null ) {
-            return charsetFromContentType(meta.getAttribute('content'));
-        }
+        return 'utf-8';
     };
 
-    const streamClose = function(filterer, buffer) {
+    const charsetFromStream = bytes => {
+        if ( bytes.length < 3 ) { return; }
+        if ( bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF ) {
+            return 'utf-8';
+        }
+        let i = -1;
+        while ( i < 65536 ) {
+            i += 1;
+            /* c */ if ( bytes[i+0] !== 0x63 ) { continue; }
+            /* h */ if ( bytes[i+1] !== 0x68 ) { continue; }
+            /* a */ if ( bytes[i+2] !== 0x61 ) { continue; }
+            /* r */ if ( bytes[i+3] !== 0x72 ) { continue; }
+            /* s */ if ( bytes[i+4] !== 0x73 ) { continue; }
+            /* e */ if ( bytes[i+5] !== 0x65 ) { continue; }
+            /* t */ if ( bytes[i+6] !== 0x74 ) { continue; }
+            break;
+        }
+        if ( (i + 40) >= 65536 ) { return; }
+        i += 8;
+        // find first alpha character
+        let j = -1;
+        while ( j < 8 ) {
+            j += 1;
+            const c = bytes[i+j];
+            if ( c >= 0x41 && c <= 0x5A ) { break; }
+            if ( c >= 0x61 && c <= 0x7A ) { break; }
+        }
+        if ( j === 8 ) { return; }
+        i += j;
+        // Collect characters until first non charset-name-character
+        const chars = [];
+        j = 0;
+        while ( j < 24 ) {
+            const c = bytes[i+j];
+            if ( c < 0x2D ) { break; }
+            if ( c > 0x2D && c < 0x30 ) { break; }
+            if ( c > 0x39 && c < 0x41 ) { break; }
+            if ( c > 0x5A && c < 0x61 ) { break; }
+            if ( c > 0x7A ) { break; }
+            chars.push(c);
+            j += 1;
+        }
+        if ( j === 20 ) { return; }
+        return String.fromCharCode(...chars).toLowerCase();
+    };
+
+    const streamClose = (session, buffer) => {
         if ( buffer !== undefined ) {
-            filterer.stream.write(buffer);
-        } else if ( filterer.buffer !== undefined ) {
-            filterer.stream.write(filterer.buffer);
+            session.stream.write(buffer);
+        } else if ( session.buffer !== undefined ) {
+            session.stream.write(session.buffer);
         }
-        filterer.stream.close();
+        session.stream.close();
     };
 
     const onStreamData = function(ev) {
-        const filterer = filterers.get(this);
-        if ( filterer === undefined ) {
+        const session = sessions.get(this);
+        if ( session === undefined ) {
             this.write(ev.data);
             this.disconnect();
             return;
         }
-        if (
-            this.status !== 'transferringdata' &&
-            this.status !== 'finishedtransferringdata'
-        ) {
-            filterers.delete(this);
-            this.disconnect();
-            return;
+        if ( this.status !== 'transferringdata' ) {
+            if ( this.status !== 'finishedtransferringdata' ) {
+                sessions.delete(this);
+                this.disconnect();
+                return;
+            }
         }
-        // TODO:
-        // - Possibly improve buffer growth, if benchmarking shows it's worth
-        //   it.
-        // - Also evaluate whether keeping a list of buffers and then decoding
-        //   them in sequence using TextDecoder's "stream" option is more
-        //   efficient. Can the data buffers be safely kept around for later
-        //   use?
-        // - Informal, quick benchmarks seem to show most of the overhead is
-        //   from calling TextDecoder.decode() and TextEncoder.encode(), and if
-        //   confirmed, there is nothing which can be done uBO-side to reduce
-        //   overhead.
-        if ( filterer.buffer === null ) {
-            filterer.buffer = new Uint8Array(ev.data);
+        if ( session.buffer === null ) {
+            session.buffer = new Uint8Array(ev.data);
             return;
         }
         const buffer = new Uint8Array(
-            filterer.buffer.byteLength +
-            ev.data.byteLength
+            session.buffer.byteLength + ev.data.byteLength
         );
-        buffer.set(filterer.buffer);
-        buffer.set(new Uint8Array(ev.data), filterer.buffer.byteLength);
-        filterer.buffer = buffer;
+        buffer.set(session.buffer);
+        buffer.set(new Uint8Array(ev.data), session.buffer.byteLength);
+        session.buffer = buffer;
+        if ( session.buffer.length >= MAX_RESPONSE_BUFFER_LENGTH ) {
+            sessions.delete(this);
+            this.write(session.buffer);
+            this.disconnect();
+        }
     };
 
     const onStreamStop = function() {
-        const filterer = filterers.get(this);
-        filterers.delete(this);
-        if ( filterer === undefined || filterer.buffer === null ) {
+        const session = sessions.get(this);
+        sessions.delete(this);
+        if ( session === undefined || session.buffer === null ) {
             this.close();
             return;
         }
         if ( this.status !== 'finishedtransferringdata' ) { return; }
 
-        if ( domParser === undefined ) {
-            domParser = new DOMParser();
-            xmlSerializer = new XMLSerializer();
+        // If encoding is still unknown, try to extract from stream data.
+        // Just assume utf-8 if ultimately no encoding can be looked up.
+        if ( session.charset === undefined ) {
+            const charsetFound = charsetFromStream(session.buffer);
+            if ( charsetFound !== undefined ) {
+                const charsetUsed = textEncode.normalizeCharset(charsetFound);
+                if ( charsetUsed === undefined ) { return streamClose(session); }
+                session.charset = charsetUsed;
+            } else {
+                session.charset = 'utf-8';
+            }
         }
+
+        while ( session.jobs.length !== 0 ) {
+            const job = session.jobs.shift();
+            job.fn(session, ...job.args);
+        }
+        if ( session.modified !== true ) { return streamClose(session); }
+
         if ( textEncoder === undefined ) {
             textEncoder = new TextEncoder();
         }
+        let encodedStream = textEncoder.encode(session.str);
 
-        let doc;
-
-        // If stream encoding is still unknnown, try to extract from document.
-        let charsetFound = filterer.charset,
-            charsetUsed = charsetFound;
-        if ( charsetFound === undefined ) {
-            if ( utf8TextDecoder === undefined ) {
-                utf8TextDecoder = new TextDecoder();
-            }
-            doc = domParser.parseFromString(
-                utf8TextDecoder.decode(filterer.buffer.slice(0, 1024)),
-                filterer.mime
-            );
-            charsetFound = charsetFromDoc(doc);
-            charsetUsed = textEncode.normalizeCharset(charsetFound);
-            if ( charsetUsed === undefined ) {
-                return streamClose(filterer);
-            }
+        if ( session.charset !== 'utf-8' ) {
+            encodedStream = textEncode.encode(session.charset, encodedStream);
         }
 
-        doc = domParser.parseFromString(
-            textDecode(charsetUsed, filterer.buffer),
-            filterer.mime
-        );
-
-        // https://github.com/gorhill/uBlock/issues/3507
-        //   In case of no explicit charset found, try to find one again, but
-        //   this time with the whole document parsed.
-        if ( charsetFound === undefined ) {
-            charsetFound = textEncode.normalizeCharset(charsetFromDoc(doc));
-            if ( charsetFound !== charsetUsed ) {
-                if ( charsetFound === undefined ) {
-                    return streamClose(filterer);
-                }
-                charsetUsed = charsetFound;
-                doc = domParser.parseFromString(
-                    textDecode(charsetFound, filterer.buffer),
-                    filterer.mime
-                );
-            }
-        }
-
-        let modified = false;
-        if ( filterer.selectors !== undefined ) {
-            if ( htmlFilteringEngine.apply(doc, filterer) ) {
-                modified = true;
-            }
-        }
-
-        if ( modified === false ) {
-            return streamClose(filterer);
-        }
-
-        // https://stackoverflow.com/questions/6088972/get-doctype-of-an-html-as-string-with-javascript/10162353#10162353
-        const doctypeStr = doc.doctype instanceof Object ?
-                xmlSerializer.serializeToString(doc.doctype) + '\n' :
-                '';
-
-        // https://github.com/gorhill/uBlock/issues/3391
-        let encodedStream = textEncoder.encode(
-            doctypeStr +
-            doc.documentElement.outerHTML
-        );
-        if ( charsetUsed !== 'utf-8' ) {
-            encodedStream = textEncode.encode(
-                charsetUsed,
-                encodedStream
-            );
-        }
-
-        streamClose(filterer, encodedStream);
+        streamClose(session, encodedStream);
     };
 
     const onStreamError = function() {
-        filterers.delete(this);
+        sessions.delete(this);
     };
 
-    return function(fctxt, extras) {
-        // https://github.com/gorhill/uBlock/issues/3478
-        const statusCode = extras.statusCode || 0;
-        if ( statusCode !== 0 && (statusCode < 200 || statusCode >= 300) ) {
-            return;
+    return class Session extends µb.FilteringContext {
+        constructor(fctxt, mime, charset, jobs) {
+            super(fctxt);
+            this.stream = null;
+            this.buffer = null;
+            this.mime = mime;
+            this.charset = charset;
+            this.str = null;
+            this.modified = false;
+            this.jobs = jobs;
         }
-
-        const hostname = fctxt.getHostname();
-        if ( hostname === '' ) { return; }
-
-        const domain = fctxt.getDomain();
-
-        const request = {
-            stream: undefined,
-            tabId: fctxt.tabId,
-            url: fctxt.url,
-            hostname: hostname,
-            domain: domain,
-            entity: entityFromDomain(domain),
-            selectors: undefined,
-            buffer: null,
-            mime: 'text/html',
-            charset: undefined
-        };
-
-        request.selectors = htmlFilteringEngine.retrieve(request);
-        if ( request.selectors === undefined ) { return; }
-
-        const headers = extras.responseHeaders;
-        const contentType = headerValueFromName('content-type', headers);
-        if ( contentType !== '' ) {
-            request.mime = mimeFromContentType(contentType);
-            if ( request.mime === undefined ) { return; }
-            let charset = charsetFromContentType(contentType);
-            if ( charset !== undefined ) {
-                charset = textEncode.normalizeCharset(charset);
-                if ( charset === undefined ) { return; }
-                request.charset = charset;
+        getString() {
+            if ( this.str !== null ) { return this.str; }
+            if ( textDecoder !== undefined ) {
+                if ( textDecoder.encoding !== this.charset ) {
+                    textDecoder = undefined;
+                }
             }
+            if ( textDecoder === undefined ) {
+                textDecoder = new TextDecoder(this.charset);
+            }
+            this.str = textDecoder.decode(this.buffer);
+            return this.str;
         }
-        // https://bugzilla.mozilla.org/show_bug.cgi?id=1426789
-        if ( headerValueFromName('content-disposition', headers) ) { return; }
+        setString(s) {
+            this.str = s;
+            this.modified = true;
+        }
+        static doFilter(requestId, fctxt, jobs) {
+            if ( jobs.length === 0 ) { return; }
+            const session = new Session(fctxt, mime, charset, jobs);
+            session.stream = browser.webRequest.filterResponseData(requestId);
+            session.stream.ondata = onStreamData;
+            session.stream.onstop = onStreamStop;
+            session.stream.onerror = onStreamError;
+            sessions.set(session.stream, session);
+        }
+        static canFilter(fctxt, details) {
+            if ( µb.canFilterResponseData !== true ) { return; }
 
-        const stream = request.stream =
-            browser.webRequest.filterResponseData(extras.requestId);
-        stream.ondata = onStreamData;
-        stream.onstop = onStreamStop;
-        stream.onerror = onStreamError;
-        filterers.set(stream, request);
+            if ( (fctxt.itype & BINARY_TYPES) !== 0 ) { return; }
 
-        return true;
+            if ( fctxt.method !== fc.METHOD_GET ) {
+                if ( fctxt.method !== fc.METHOD_POST ) {
+                    return;
+                }
+            }
+
+            // https://github.com/gorhill/uBlock/issues/3478
+            const statusCode = details.statusCode || 0;
+            if ( statusCode === 0 ) { return; }
+
+            const hostname = fctxt.getHostname();
+            if ( hostname === '' ) { return; }
+
+            // https://bugzilla.mozilla.org/show_bug.cgi?id=1426789
+            const headers = details.responseHeaders;
+            const disposition = headerValueFromName('content-disposition', headers);
+            if ( disposition !== '' ) {
+                if ( disposition.startsWith('inline') === false ) { return; }
+            }
+
+            mime = 'text/plain';
+            charset = 'utf-8';
+            const contentType = headerValueFromName('content-type', headers) ||
+                contentTypeFromDetails(details);
+            if ( contentType !== '' ) {
+                mime = mimeFromContentType(contentType);
+                if ( mime === undefined ) { return; }
+                if ( mime.startsWith('text/') === false ) {
+                    if ( otherValidMimes.has(mime) === false ) { return; }
+                }
+                charset = charsetFromContentType(contentType);
+                if ( charset !== undefined ) {
+                    charset = textEncode.normalizeCharset(charset);
+                    if ( charset === undefined ) { return; }
+                } else {
+                    charset = charsetFromMime(mime);
+                }
+            }
+
+            return true;
+        }
     };
 })();
 
 /******************************************************************************/
 
-const injectCSP = function(fctxt, pageStore, responseHeaders) {
+function injectCSP(fctxt, pageStore, responseHeaders) {
     const cspSubsets = [];
     const requestType = fctxt.type;
 
@@ -889,8 +1016,8 @@ const injectCSP = function(fctxt, pageStore, responseHeaders) {
 
     const builtinDirectives = [];
 
-    if ( pageStore.filterScripting(fctxt, true) === 1 ) {
-        builtinDirectives.push(µb.cspNoScripting);
+    if ( pageStore.filterScripting(fctxt, false) === 1 ) {
+        builtinDirectives.push(µb.hiddenSettings.noScriptingCSP);
         if ( logger.enabled ) {
             fctxt.setRealm('network').setType('scripting').toLogger();
         }
@@ -989,7 +1116,7 @@ const injectCSP = function(fctxt, pageStore, responseHeaders) {
 
     if ( cspSubsets.length === 0 ) { return; }
 
-    µb.updateToolbarIcon(fctxt.tabId, 0x02);
+    µb.updateToolbarIcon(fctxt.tabId, 0b0010);
 
     // Use comma to merge CSP directives.
     // Ref.: https://www.w3.org/TR/CSP2/#implementation-considerations
@@ -1006,24 +1133,37 @@ const injectCSP = function(fctxt, pageStore, responseHeaders) {
     });
 
     return true;
-};
+}
 
 /******************************************************************************/
 
-// https://github.com/uBlockOrigin/uBlock-issues/issues/1553
-// https://github.com/WICG/floc#opting-out-of-computation
-
-const foilFloc = function(fctxt, responseHeaders) {
-    const hn = fctxt.getHostname();
-    if ( scriptletFilteringEngine.hasScriptlet(hn, 1, 'no-floc') === false ) {
-        return false;
+function injectPP(fctxt, pageStore, responseHeaders) {
+    const permissions = [];
+    const directives = staticNetFilteringEngine.matchAndFetchModifiers(fctxt, 'permissions');
+    if ( directives !== undefined ) {
+        for ( const directive of directives ) {
+            if ( directive.result !== 1 ) { continue; }
+            permissions.push(directive.value.replaceAll('|', ', '));
+        }
     }
+
+    if ( logger.enabled && directives !== undefined ) {
+        fctxt.setRealm('network')
+             .pushFilters(directives.map(a => a.logData()))
+             .toLogger();
+    }
+
+    if ( permissions.length === 0 ) { return; }
+
+    µb.updateToolbarIcon(fctxt.tabId, 0x02);
+
     responseHeaders.push({
-        name: 'Permissions-Policy',
-        value: 'interest-cohort=()' }
-    );
+        name: 'permissions-policy',
+        value: permissions.join(', ')
+    });
+
     return true;
-};
+}
 
 /******************************************************************************/
 
@@ -1034,18 +1174,15 @@ const foilFloc = function(fctxt, responseHeaders) {
 //   cache. This works only when the webext API supports the `fromCache`
 //   property (Firefox).
 
-const foilLargeMediaElement = function(details, fctxt, pageStore) {
+function foilLargeMediaElement(details, fctxt, pageStore) {
     if ( details.fromCache === true ) { return; }
 
-    let size = 0;
-    if ( µb.userSettings.largeMediaSize !== 0 ) {
-        const headers = details.responseHeaders;
-        const i = headerIndexFromName('content-length', headers);
-        if ( i === -1 ) { return; }
-        size = parseInt(headers[i].value, 10) || 0;
-    }
+    onDemandHeaders.setHeaders(details.responseHeaders);
 
-    const result = pageStore.filterLargeMediaElement(fctxt, size);
+    const result = pageStore.filterLargeMediaElement(fctxt, onDemandHeaders);
+
+    onDemandHeaders.reset();
+
     if ( result === 0 ) { return; }
 
     if ( logger.enabled ) {
@@ -1053,18 +1190,17 @@ const foilLargeMediaElement = function(details, fctxt, pageStore) {
     }
 
     return { cancel: true };
-};
+}
+
+foilLargeMediaElement.TYPE_BITS = fc.IMAGE | fc.MEDIA | fc.XMLHTTPREQUEST;
 
 /******************************************************************************/
 
 // Caller must ensure headerName is normalized to lower case.
 
 const headerIndexFromName = function(headerName, headers) {
-    let i = headers.length;
-    while ( i-- ) {
-        if ( headers[i].name.toLowerCase() === headerName ) {
-            return i;
-        }
+    for ( let i = 0, n = headers.length; i < n; i++ ) {
+        if ( headers[i].name.toLowerCase() === headerName ) { return i; }
     }
     return -1;
 };
@@ -1074,11 +1210,31 @@ const headerValueFromName = function(headerName, headers) {
     return i !== -1 ? headers[i].value : '';
 };
 
+const onDemandHeaders = {
+    headers: [],
+    get contentLength() {
+        const contentLength = headerValueFromName('content-length', this.headers);
+        if ( contentLength === '' ) { return Number.NaN; }
+        return parseInt(contentLength, 10) || 0;
+    },
+    get contentType() {
+        return headerValueFromName('content-type', this.headers);
+    },
+    setHeaders(headers) {
+        this.headers = headers;
+    },
+    reset() {
+        this.headers = [];
+    }
+};
+
 /******************************************************************************/
 
 const strictBlockBypasser = {
     hostnameToDeadlineMap: new Map(),
-    cleanupTimer: undefined,
+    cleanupTimer: vAPI.defer.create(( ) => {
+        strictBlockBypasser.cleanup();
+    }),
 
     cleanup: function() {
         for ( const [ hostname, deadline ] of this.hostnameToDeadlineMap ) {
@@ -1088,35 +1244,23 @@ const strictBlockBypasser = {
         }
     },
 
+    revokeTime: function() {
+        return Date.now() + µb.hiddenSettings.strictBlockingBypassDuration * 1000;
+    },
+
     bypass: function(hostname) {
         if ( typeof hostname !== 'string' || hostname === '' ) { return; }
-        this.hostnameToDeadlineMap.set(
-            hostname,
-            Date.now() + µb.hiddenSettings.strictBlockingBypassDuration * 1000
-        );
+        this.hostnameToDeadlineMap.set(hostname, this.revokeTime());
     },
 
     isBypassed: function(hostname) {
         if ( this.hostnameToDeadlineMap.size === 0 ) { return false; }
-        let bypassDuration =
-            µb.hiddenSettings.strictBlockingBypassDuration * 1000;
-        if ( this.cleanupTimer === undefined ) {
-            this.cleanupTimer = vAPI.setTimeout(
-                ( ) => {
-                    this.cleanupTimer = undefined;
-                    this.cleanup();
-                },
-                bypassDuration + 10000
-            );
-        }
+        this.cleanupTimer.on({ sec: µb.hiddenSettings.strictBlockingBypassDuration + 10 });
         for (;;) {
             const deadline = this.hostnameToDeadlineMap.get(hostname);
             if ( deadline !== undefined ) {
                 if ( deadline > Date.now() ) {
-                    this.hostnameToDeadlineMap.set(
-                        hostname,
-                        Date.now() + bypassDuration
-                    );
+                    this.hostnameToDeadlineMap.set(hostname, this.revokeTime());
                     return true;
                 }
                 this.hostnameToDeadlineMap.delete(hostname);
@@ -1131,6 +1275,67 @@ const strictBlockBypasser = {
 
 /******************************************************************************/
 
+function onResponseStarted(details) {
+    if ( details.tabId === -1 ) { return; }
+    const pageStore = µb.pageStoreFromTabId(details.tabId);
+    if ( pageStore === null ) { return; }
+    if ( pageStore.isTrusted() ) { return; }
+    // To enforce strict-blocking with ipaddress option
+    if ( isGecko ) { return; }
+    if ( details.type !== 'main_frame' ) { return; }
+    const fctxt = µb.filteringContext.fromWebrequestDetails(details);
+    onBeforeRootFrameRequest(fctxt);
+}
+
+onResponseStarted.start = function() {
+    browser.webRequest.onResponseStarted.addListener(onResponseStarted, {
+        types: [ 'main_frame', 'sub_frame' ],
+        urls: [ 'http://*/*', 'https://*/*' ]
+    });
+};
+
+/******************************************************************************/
+
+const requestHeadersManager = {
+    requests: new Map(),
+    start() {
+        const extraInfoSpec = [ 'requestHeaders' ];
+        if ( isGecko !== true ) {
+            extraInfoSpec.push('extraHeaders');
+        }
+        browser.webRequest.onSendHeaders.addListener(details => {
+            this.requests.set(details.requestId, details.requestHeaders);
+        }, {
+            urls: [ 'http://*/*', 'https://*/*' ]
+        }, extraInfoSpec);
+        browser.webRequest.onBeforeRedirect.addListener(details => {
+            this.requests.delete(details.requestId);
+        }, {
+            urls: [ 'http://*/*', 'https://*/*' ]
+        });
+        browser.webRequest.onCompleted.addListener(details => {
+            this.requests.delete(details.requestId);
+        }, {
+            urls: [ 'http://*/*', 'https://*/*' ]
+        });
+        browser.webRequest.onErrorOccurred.addListener(details => {
+            this.requests.delete(details.requestId);
+        }, {
+            urls: [ 'http://*/*', 'https://*/*' ]
+        });
+    },
+    lookup(details) {
+        return this.requests.get(details.requestId) || [];
+    }
+};
+
+/******************************************************************************/
+
+// https://github.com/uBlockOrigin/uBlock-issues/issues/2350
+//   Added scriptlet injection attempt at onResponseStarted time as per
+//   https://github.com/AdguardTeam/AdguardBrowserExtension/issues/1029 and
+//   https://github.com/AdguardTeam/AdguardBrowserExtension/blob/9ab85be5/Extension/src/background/webrequest.js#L620
+
 const webRequest = {
     onBeforeRequest,
 
@@ -1140,14 +1345,21 @@ const webRequest = {
             vAPI.net.suspend();
         }
 
-        return async ( ) => {
+        return ( ) => {
             vAPI.net.setSuspendableListener(onBeforeRequest);
-            vAPI.net.addListener(
-                'onHeadersReceived',
-                onHeadersReceived,
-                { urls: [ 'http://*/*', 'https://*/*' ] },
-                [ 'blocking', 'responseHeaders' ]
-            );
+            vAPI.net.addListener('onHeadersReceived', onHeadersReceived, {
+                urls: [ 'http://*/*', 'https://*/*' ]
+            }, [ 'blocking', 'responseHeaders' ]);
+            onResponseStarted.start();
+            requestHeadersManager.start();
+            vAPI.defer.once({ sec: µb.hiddenSettings.toolbarWarningTimeout }).then(( ) => {
+                if ( vAPI.net.hasUnprocessedRequest() === false ) { return; }
+                vAPI.net.removeUnprocessedRequest();
+                return vAPI.tabs.getCurrent();
+            }).then(tab => {
+                if ( tab instanceof Object === false ) { return; }
+                µb.updateToolbarIcon(tab.id, 0b0110);
+            });
             vAPI.net.unsuspend({ all: true });
         };
     })(),

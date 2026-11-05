@@ -1,6 +1,6 @@
 /*******************************************************************************
 
-    uBlock Origin - a browser extension to block requests.
+    uBlock Origin - a comprehensive, efficient content blocker
     Copyright (C) 2014-present Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
@@ -19,18 +19,20 @@
     Home: https://github.com/gorhill/uBlock
 */
 
-'use strict';
+/* global browser */
 
 /******************************************************************************/
-
-import logger from './logger.js';
-import { FilteringContext } from './filtering-context.js';
 
 import {
     domainFromHostname,
     hostnameFromURI,
     originFromURI,
 } from './uri-utils.js';
+
+import { FilteringContext } from './filtering-context.js';
+import { TrustedSiteManager } from './trusted-sites.js';
+import logger from './logger.js';
+import { ubologSet } from './console.js';
 
 /******************************************************************************/
 
@@ -46,45 +48,57 @@ const hiddenSettingsDefault = {
     allowGenericProceduralFilters: false,
     assetFetchTimeout: 30,
     autoCommentFilterTemplate: '{{date}} {{origin}}',
-    autoUpdateAssetFetchPeriod: 60,
-    autoUpdateDelayAfterLaunch: 105,
-    autoUpdatePeriod: 4,
+    autoUpdateAssetFetchPeriod: 5,
+    autoUpdateDelayAfterLaunch: 37,
+    autoUpdatePeriod: 1,
     benchmarkDatasetURL: 'unset',
     blockingProfiles: '11111/#F00 11010/#C0F 11001/#00F 00001',
-    cacheStorageAPI: 'unset',
     cacheStorageCompression: true,
-    cacheControlForFirefox1376932: 'no-cache, no-store, must-revalidate',
+    cacheStorageCompressionThreshold: 65536,
+    cacheStorageMultithread: 2,
+    cacheControlForFirefox1376932: 'unset',
     cloudStorageCompression: true,
     cnameIgnoreList: 'unset',
     cnameIgnore1stParty: true,
     cnameIgnoreExceptions: true,
     cnameIgnoreRootDocument: true,
-    cnameMaxTTL: 120,
     cnameReplayFullURL: false,
-    cnameUncloak: true,
-    cnameUncloakProxied: false,
     consoleLogLevel: 'unset',
-    debugScriptlets: false,
-    debugScriptletInjector: false,
+    debugAssetsJson: false,
+    debugMainScriptlets: false,
+    debugIsolatedScriptlets: false,
+    differentialUpdate: true,
     disableWebAssembly: false,
+    dnsCacheTTL: 600,
+    dnsResolveEnabled: true,
     extensionUpdateForceReload: false,
     filterAuthorMode: false,
-    filterOnHeaders: false,
     loggerPopupType: 'popup',
     manualUpdateAssetFetchPeriod: 500,
     modifyWebextFlavor: 'unset',
+    noScriptingCSP: 'script-src http: https:',
     popupFontSize: 'unset',
     popupPanelDisabledSections: 0,
-    popupPanelLockedSections: 0,
     popupPanelHeightMode: 0,
+    popupPanelLockedSections: 0,
+    popupPanelOrientation: 'unset',
     requestJournalProcessPeriod: 1000,
-    selfieAfter: 2,
+    requestStatsDisabled: false,
+    selfieDelayInSeconds: 53,
     strictBlockingBypassDuration: 120,
+    toolbarWarningTimeout: 60,
+    trustedListPrefixes: 'ublock-',
     uiPopupConfig: 'unset',
     uiStyles: 'unset',
     updateAssetBypassBrowserCache: false,
     userResourcesLocation: 'unset',
 };
+
+if ( vAPI.webextFlavor.soup.has('devbuild') ) {
+    hiddenSettingsDefault.consoleLogLevel = 'info';
+    hiddenSettingsDefault.cacheStorageAPI = 'unset';
+    ubologSet(true);
+}
 
 const userSettingsDefault = {
     advancedUserEnabled: false,
@@ -101,7 +115,7 @@ const userSettingsDefault = {
     externalLists: '',
     firewallPaneMinimized: true,
     hyperlinkAuditingDisabled: true,
-    ignoreGenericCosmeticFilters: vAPI.webextFlavor.soup.has('mobile'),
+    ignoreGenericCosmeticFilters: false,
     importedLists: [],
     largeMediaSize: 50,
     parseAllABPHideFilters: true,
@@ -111,6 +125,7 @@ const userSettingsDefault = {
     showIconBadge: true,
     suspendUntilListsAreLoaded: vAPI.Net.canSuspend(),
     tooltipsDisabled: false,
+    userFiltersTrusted: false,
     webrtcIPAddressHidden: false,
 };
 
@@ -133,10 +148,12 @@ if ( vAPI.webextFlavor.soup.has('firefox') ) {
 }
 
 const µBlock = {  // jshint ignore:line
-    userSettingsDefault: userSettingsDefault,
+    alarmQueue: [],
+
+    userSettingsDefault,
     userSettings: Object.assign({}, userSettingsDefault),
 
-    hiddenSettingsDefault: hiddenSettingsDefault,
+    hiddenSettingsDefault,
     hiddenSettingsAdmin: {},
     hiddenSettings: Object.assign({}, hiddenSettingsDefault),
 
@@ -149,34 +166,24 @@ const µBlock = {  // jshint ignore:line
     privacySettingsSupported: vAPI.browserSettings instanceof Object,
     cloudStorageSupported: vAPI.cloud instanceof Object,
     canFilterResponseData: typeof browser.webRequest.filterResponseData === 'function',
-    canInjectScriptletsNow: vAPI.webextFlavor.soup.has('chromium'),
 
     // https://github.com/chrisaljoudi/uBlock/issues/180
-    // Whitelist directives need to be loaded once the PSL is available
-    netWhitelist: new Map(),
-    netWhitelistModifyTime: 0,
-    netWhitelistDefault: [
-        'about-scheme',
+    //   Trusted-site directives need to be loaded once the PSL is available
+    trustedSites: new TrustedSiteManager(),
+    defaultTrustedSiteDirectives: [
         'chrome-extension-scheme',
-        'chrome-scheme',
-        'edge-scheme',
         'moz-extension-scheme',
-        'opera-scheme',
-        'vivaldi-scheme',
-        'wyciwyg-scheme',   // Firefox's "What-You-Cache-Is-What-You-Get"
     ],
 
-    localSettings: {
-        blockedRequestCount: 0,
-        allowedRequestCount: 0,
+    requestStats: {
+        blockedCount: 0,
+        allowedCount: 0,
     },
-    localSettingsLastModified: 0,
-    localSettingsLastSaved: 0,
 
     // Read-only
     systemSettings: {
-        compiledMagic: 46,  // Increase when compiled format changes
-        selfieMagic: 46,    // Increase when selfie format changes
+        compiledMagic: 72,  // Increase when compiled format changes
+        selfieMagic: 72,    // Increase when selfie format changes
     },
 
     // https://github.com/uBlockOrigin/uBlock-issues/issues/759#issuecomment-546654501
@@ -203,6 +210,9 @@ const µBlock = {  // jshint ignore:line
     // lists to enable by default when uBO is first installed.
     assetsBootstrapLocation: undefined,
 
+    assetsJsonPath: vAPI.webextFlavor.soup.has('devbuild')
+        ? '/assets/assets.dev.json'
+        : '/assets/assets.json',
     userFiltersPath: 'user-filters',
     pslAssetKey: 'public_suffix_list.dat',
 
@@ -210,13 +220,16 @@ const µBlock = {  // jshint ignore:line
     availableFilterLists: {},
     badLists: new Map(),
 
+    inMemoryFilters: [],
+    inMemoryFiltersCompiled: '',
+
     // https://github.com/uBlockOrigin/uBlock-issues/issues/974
     //   This can be used to defer filtering decision-making.
     readyToFilter: false,
 
     supportStats: {
-        allReadyAfter: '',
-        maxAssetCacheWait: '0 ms',
+        allReadyAfter: '?',
+        maxAssetCacheWait: '?',
     },
 
     pageStores: new Map(),
@@ -244,11 +257,11 @@ const µBlock = {  // jshint ignore:line
     scriptlets: {},
 
     cspNoInlineScript: "script-src 'unsafe-eval' * blob: data:",
-    cspNoScripting: 'script-src http: https:',
     cspNoInlineFont: 'font-src *',
 
     liveBlockingProfiles: [],
     blockingProfileColorCache: new Map(),
+    parsedTrustedListPrefixes: [],
     uiAccentStylesheet: '',
 };
 
@@ -269,20 +282,32 @@ const µBlock = {  // jshint ignore:line
         return this;
     }
 
+    maybeFromDocumentURL(documentUrl) {
+        if ( documentUrl === undefined ) { return; }
+        if ( documentUrl.startsWith(this.tabOrigin) ) { return; }
+        this.tabOrigin = originFromURI(µBlock.normalizeTabURL(0, documentUrl));
+        this.tabHostname = hostnameFromURI(this.tabOrigin);
+        this.tabDomain = domainFromHostname(this.tabHostname);
+    }
+
     // https://github.com/uBlockOrigin/uBlock-issues/issues/459
     //   In case of a request for frame and if ever no context is specified,
     //   assume the origin of the context is the same as the request itself.
     fromWebrequestDetails(details) {
         const tabId = details.tabId;
         this.type = details.type;
-        if ( this.itype === this.MAIN_FRAME && tabId > 0 ) {
+        const isMainFrame = this.itype === this.MAIN_FRAME;
+        if ( isMainFrame && tabId > 0 ) {
             µBlock.tabContextManager.push(tabId, details.url);
         }
         this.fromTabId(tabId); // Must be called AFTER tab context management
         this.realm = '';
-        this.id = details.requestId;
+        this.setMethod(details.method);
         this.setURL(details.url);
+        this.setIPAddress(details.ip);
         this.aliasURL = details.aliasURL || undefined;
+        this.redirectURL = undefined;
+        this.filter = undefined;
         if ( this.itype !== this.SUB_FRAME ) {
             this.docId = details.frameId;
             this.frameId = -1;
@@ -292,33 +317,38 @@ const µBlock = {  // jshint ignore:line
         }
         if ( this.tabId > 0 ) {
             if ( this.docId === 0 ) {
+                if ( isMainFrame === false ) {
+                    this.maybeFromDocumentURL(details.documentUrl);
+                }
                 this.docOrigin = this.tabOrigin;
                 this.docHostname = this.tabHostname;
                 this.docDomain = this.tabDomain;
-            } else if ( details.documentUrl !== undefined ) {
-                this.setDocOriginFromURL(details.documentUrl);
-            } else {
-                const pageStore = µBlock.pageStoreFromTabId(this.tabId);
-                const docStore = pageStore && pageStore.getFrameStore(this.docId);
-                if ( docStore ) {
-                    this.setDocOriginFromURL(docStore.rawURL);
-                } else {
-                    this.setDocOrigin(this.tabOrigin);
-                }
+                return this;
             }
-        } else if ( details.documentUrl !== undefined ) {
+            if ( details.documentUrl !== undefined ) {
+                this.setDocOriginFromURL(details.documentUrl);
+                return this;
+            }
+            const pageStore = µBlock.pageStoreFromTabId(this.tabId);
+            const docStore = pageStore && pageStore.getFrameStore(this.docId);
+            if ( docStore ) {
+                this.setDocOriginFromURL(docStore.rawURL);
+            } else {
+                this.setDocOrigin(this.tabOrigin);
+            }
+            return this;
+        }
+        if ( details.documentUrl !== undefined ) {
             const origin = originFromURI(
                 µBlock.normalizeTabURL(0, details.documentUrl)
             );
             this.setDocOrigin(origin).setTabOrigin(origin);
-        } else if ( this.docId === -1 || (this.itype & this.FRAME_ANY) !== 0 ) {
-            const origin = originFromURI(this.url);
-            this.setDocOrigin(origin).setTabOrigin(origin);
-        } else {
-            this.setDocOrigin(this.tabOrigin);
+            return this;
         }
-        this.redirectURL = undefined;
-        this.filter = undefined;
+        const origin = this.isDocument()
+            ? originFromURI(this.url)
+            : this.tabOrigin;
+        this.setDocOrigin(origin).setTabOrigin(origin);
         return this;
     }
 
@@ -333,24 +363,30 @@ const µBlock = {  // jshint ignore:line
     }
 
     toLogger() {
-        this.tstamp = Date.now();
-        if ( this.domain === undefined ) {
-            void this.getDomain();
-        }
-        if ( this.docDomain === undefined ) {
-            void this.getDocDomain();
-        }
-        if ( this.tabDomain === undefined ) {
-            void this.getTabDomain();
-        }
-        const filters = this.filter;
+        const details = {
+            tstamp: 0,
+            realm: this.realm,
+            method: this.getMethodName(),
+            type: this.stype,
+            tabId: this.tabId,
+            tabDomain: this.getTabDomain(),
+            tabHostname: this.getTabHostname(),
+            docDomain: this.getDocDomain(),
+            docHostname: this.getDocHostname(),
+            domain: this.getDomain(),
+            hostname: this.getHostname(),
+            url: this.url,
+            aliasURL: this.aliasURL,
+            filter: undefined,
+        };
         // Many filters may have been applied to the current context
-        if ( Array.isArray(filters) === false ) {
-            return logger.writeOne(this);
+        if ( Array.isArray(this.filter) === false ) {
+            details.filter = this.filter;
+            return logger.writeOne(details);
         }
-        for ( const filter of filters ) {
-            this.filter = filter;
-            logger.writeOne(this);
+        for ( const filter of this.filter ) {
+            details.filter = filter;
+            logger.writeOne(details);
         }
     }
 };

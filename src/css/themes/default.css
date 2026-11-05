@@ -5,7 +5,7 @@
       https://material.io/
 
     Color names from:
-      https://protocol.mozilla.org/fundamentals/color.html
+      https://protocol.mozilla.org/docs/fundamentals/color.html
 
     Tools:
       Lightness validator: https://www.hsluv.org/
@@ -35,6 +35,7 @@
     --green-40: 84 255 189;
     --green-50: 63 225 176;
     --green-60: 42 195 162;
+    --green-65: 21 165 149;
     --green-70: 0 135 135;
     --green-80: 0 94 94;
     --ink-10: 57 52 115;
@@ -127,7 +128,9 @@
  * */
 :root {
     --font-size: 14px;
-    --font-size-smaller: 13px;
+    --font-size-smaller: calc(var(--font-size) - 1px);
+    --font-size-xsmall: calc(var(--font-size) - 3px);
+    --font-size-larger: 15px;
     --font-family: Inter, sans-serif;
     --monospace-size: 12px;
 }
@@ -235,6 +238,9 @@
 
     --dashboard-tab-active-ink-rgb: var(--primary-40);
     --dashboard-tab-focus-surface-rgb: var(--primary-90);
+    --dashboard-highlight-surface-rgb: var(--primary-90);
+
+    --dashboard-happy-green: rgb(var(--green-65));
 
     /* popup panel */
     --popup-cell-cname-ink: #0054d7; /* h260 S:100 Luv:40 */;
@@ -281,9 +287,10 @@
     --sf-notice-ink: var(--ink-4);
     --sf-readonly-ink: var(--ink-3);
     --sf-tag-ink: #006e2e /* h:135 S:100 Luv:40 */;
+    --sf-unicode-ink: var(--ink-1);
     --sf-value-ink: #974900 /* h:30 S:100 Luv:40 */;
     --sf-variable-ink: var(--ink-1);
-    --sf-warning-ink: #e49d00; /* h:50 S:100 Luv:70 */
+    --sf-warning-ink: #ffbb03; /* h:50 S:100 Luv:70 */
     --sf-warning-surface: #e49d0033; /* h:50 S:100 Luv:70 @ 20% */
 
     /* syntax highlight: dynamic filtering */
@@ -293,8 +300,9 @@
 
     /* logger */
     --logger-modified-surface: #0000c010;
-    --logger-redirected-surface: rgb(var(--yellow-5) / 50%);
     --logger-modified-em-surface: #0000c028;
+    --logger-redirected-surface: rgb(var(--yellow-5) / 50%);
+    --logger-scriptlet-surface: rgb(var(--yellow-30) / 50%);
 }
 
 /* https://material.io/design/color/dark-theme.html */
@@ -306,7 +314,7 @@
     --elevation-up1-opacity: 12%;
     --elevation-up2-opacity: 24%;
 
-    --ink-rgb: var(--gray-95);
+    --ink-rgb: var(--gray-90);
     --ink-0: white;
     --ink-100: black;
 
@@ -325,6 +333,7 @@
 
     --dashboard-tab-active-ink-rgb: var(--primary-70);
     --dashboard-tab-focus-surface-rgb: var(--primary-20);
+    --dashboard-highlight-surface-rgb: var(--primary-20);
 
     /* popup panel */
     --popup-cell-cname-ink: #93a6ff; /* h260 S:100 Luv:70 */;
@@ -369,12 +378,11 @@
     /* logger */
     --logger-modified-surface: #663efd60;
     --logger-redirected-surface: rgb(var(--yellow-5) / 40%);
+    --logger-scriptlet-surface: rgb(var(--yellow-30) / 40%);
 }
 
-:root.dark input,
-:root.dark select,
-:root.dark textarea {
-    color-scheme: dark;
+:root.dark {
+    color-scheme: dark light;
 }
 
 /*
@@ -400,8 +408,11 @@
     --fieldset-header-surface: transparent;
     --fieldset-header-ink: var(--ink-2);
 
+    --native-control-opacity: 0;
+
     --button-ink: var(--ink-1);
     --button-surface: rgb(var(--button-surface-rgb));
+    --button-border-size: 0;
     --button-border-radius: 5px;
     --button-preferred-ink: var(--accent-ink-1);
     --button-preferred-surface: var(--accent-surface-1);
@@ -412,6 +423,7 @@
     --checkbox-ink: var(--ink-3);
     --checkbox-checked-ink: var(--accent-surface-1);
     --checkbox-disabled-filter: opacity(50%);
+    --checkbox-margin-end: calc(var(--font-size) * 0.75);
 
     --notice-ink: var(--accent-ink-1);
     --notice-surface: var(--accent-surface-1);
@@ -444,11 +456,18 @@
     --popup-cell-block-surface: rgb(var(--popup-cell-block-surface-rgb));
     --popup-power-ink: rgb(var(--popup-power-ink-rgb));
     --popup-toolbar-surface: rgb(var(--primary-80) / 15%);
-    --popup-toolbar-surface-hover: rgb(var(--primary-80) / 20%);
+    --popup-toolbar-surface-hover: rgb(var(--primary-80) / 30%);
     --popup-ruleset-tool-ink: var(--ink-1);
     --popup-ruleset-tool-surface: rgb(var(--primary-80) / 15%);
     --popup-ruleset-tool-surface-hover: rgb(var(--primary-80) / 20%);
     --popup-ruleset-tool-shadow: transparent;
+}
+
+@media (prefers-contrast: more) {
+    :root {
+        --native-control-opacity: 1;
+        --button-border-size: 1px;
+    }
 }
 
 /*

@@ -1,6 +1,6 @@
 /*******************************************************************************
 
-    uBlock Origin - a browser extension to block requests.
+    uBlock Origin - a comprehensive, efficient content blocker
     Copyright (C) 2014-present Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
@@ -19,24 +19,32 @@
     Home: https://github.com/gorhill/uBlock
 */
 
-/* global uDom */
-
-'use strict';
-
-/******************************************************************************/
-
-(( ) => {
+import { dom, qs$, qsa$ } from './dom.js';
+import { setAccentColor, setTheme } from './theme.js';
+import { i18n$ } from './i18n.js';
 
 /******************************************************************************/
 
-const handleImportFilePicker = function() {
+function handleImportFilePicker() {
     const file = this.files[0];
     if ( file === undefined || file.name === '' ) { return; }
-    if ( file.type.indexOf('text') !== 0 ) { return; }
+
+    const reportError = ( ) => {
+        window.alert(i18n$('aboutRestoreDataError'));
+    };
+
+    const expectedFileTypes = [
+        'text/plain',
+        'application/json',
+    ];
+    if ( expectedFileTypes.includes(file.type) === false ) {
+        return reportError();
+    }
 
     const filename = file.name;
+    const fr = new FileReader();
 
-    const fileReaderOnLoadHandler = function() {
+    fr.onload = function() {
         let userData;
         try {
             userData = JSON.parse(this.result);
@@ -59,15 +67,14 @@ const handleImportFilePicker = function() {
                 throw 'Invalid';
             }
         }
-        catch (e) {
+        catch {
             userData = undefined;
         }
         if ( userData === undefined ) {
-            window.alert(vAPI.i18n('aboutRestoreDataError'));
-            return;
+            return reportError();
         }
         const time = new Date(userData.timeStamp);
-        const msg = vAPI.i18n('aboutRestoreDataConfirm')
+        const msg = i18n$('aboutRestoreDataConfirm')
                         .replace('{{time}}', time.toLocaleString());
         const proceed = window.confirm(msg);
         if ( proceed !== true ) { return; }
@@ -78,25 +85,23 @@ const handleImportFilePicker = function() {
         });
     };
 
-    const fr = new FileReader();
-    fr.onload = fileReaderOnLoadHandler;
     fr.readAsText(file);
-};
+}
 
 /******************************************************************************/
 
-const startImportFilePicker = function() {
-    const input = document.getElementById('restoreFilePicker');
+function startImportFilePicker() {
+    const input = qs$('#restoreFilePicker');
     // Reset to empty string, this will ensure an change event is properly
     // triggered if the user pick a file, even if it is the same as the last
     // one picked.
     input.value = '';
     input.click();
-};
+}
 
 /******************************************************************************/
 
-const exportToFile = async function() {
+async function exportToFile() {
     const response = await vAPI.messaging.send('dashboard', {
         what: 'backupUserData',
     });
@@ -112,11 +117,11 @@ const exportToFile = async function() {
         'filename': response.localData.lastBackupFile
     });
     onLocalDataReceived(response.localData);
-};
+}
 
 /******************************************************************************/
 
-const onLocalDataReceived = function(details) {
+function onLocalDataReceived(details) {
     let v, unit;
     if ( typeof details.storageUsed === 'number' ) {
         v = details.storageUsed;
@@ -136,10 +141,12 @@ const onLocalDataReceived = function(details) {
         v = '?';
         unit = '';
     }
-    uDom.nodeFromId('storageUsed').textContent =
-        vAPI.i18n('storageUsed')
+    dom.text(
+        '#storageUsed',
+        i18n$('storageUsed')
             .replace('{{value}}', v.toLocaleString(undefined, { maximumSignificantDigits: 3 }))
-            .replace('{{unit}}', unit && vAPI.i18n(unit) || '');
+            .replace('{{unit}}', unit && i18n$(unit) || '')
+    );
 
     const timeOptions = {
         weekday: 'long',
@@ -154,8 +161,8 @@ const onLocalDataReceived = function(details) {
     const lastBackupFile = details.lastBackupFile || '';
     if ( lastBackupFile !== '' ) {
         const dt = new Date(details.lastBackupTime);
-        const text = vAPI.i18n('settingsLastBackupPrompt');
-        const node = uDom.nodeFromId('settingsLastBackupPrompt');
+        const text = i18n$('settingsLastBackupPrompt');
+        const node = qs$('#settingsLastBackupPrompt');
         node.textContent = text + '\xA0' + dt.toLocaleString('fullwide', timeOptions);
         node.style.display = '';
     }
@@ -163,46 +170,47 @@ const onLocalDataReceived = function(details) {
     const lastRestoreFile = details.lastRestoreFile || '';
     if ( lastRestoreFile !== '' ) {
         const dt = new Date(details.lastRestoreTime);
-        const text = vAPI.i18n('settingsLastRestorePrompt');
-        const node = uDom.nodeFromId('settingsLastRestorePrompt');
+        const text = i18n$('settingsLastRestorePrompt');
+        const node = qs$('#settingsLastRestorePrompt');
         node.textContent = text + '\xA0' + dt.toLocaleString('fullwide', timeOptions);
         node.style.display = '';
     }
 
     if ( details.cloudStorageSupported === false ) {
-        uDom('[data-setting-name="cloudStorageEnabled"]').attr('disabled', '');
+        dom.attr('[data-setting-name="cloudStorageEnabled"]', 'disabled', '');
     }
 
     if ( details.privacySettingsSupported === false ) {
-        uDom('[data-setting-name="prefetchingDisabled"]').attr('disabled', '');
-        uDom('[data-setting-name="hyperlinkAuditingDisabled"]').attr('disabled', '');
-        uDom('[data-setting-name="webrtcIPAddressHidden"]').attr('disabled', '');
+        dom.attr('[data-setting-name="prefetchingDisabled"]', 'disabled', '');
+        dom.attr('[data-setting-name="hyperlinkAuditingDisabled"]', 'disabled', '');
+        dom.attr('[data-setting-name="webrtcIPAddressHidden"]', 'disabled', '');
     }
-};
+}
 
 /******************************************************************************/
 
-const resetUserData = function() {
-    const msg = vAPI.i18n('aboutResetDataConfirm');
+function resetUserData() {
+    const msg = i18n$('aboutResetDataConfirm');
     const proceed = window.confirm(msg);
     if ( proceed !== true ) { return; }
     vAPI.messaging.send('dashboard', {
         what: 'resetUserData',
     });
-};
+}
 
 /******************************************************************************/
 
-const synchronizeDOM = function() {
-    document.body.classList.toggle(
+function synchronizeDOM() {
+    dom.cl.toggle(
+        dom.body,
         'advancedUser',
-        uDom.nodeFromSelector('[data-setting-name="advancedUserEnabled"]').checked === true
+        qs$('[data-setting-name="advancedUserEnabled"]').checked === true
     );
-};
+}
 
 /******************************************************************************/
 
-const changeUserSettings = function(name, value) {
+function changeUserSettings(name, value) {
     vAPI.messaging.send('dashboard', {
         what: 'userSettings',
         name,
@@ -212,26 +220,26 @@ const changeUserSettings = function(name, value) {
     // Maybe reflect some changes immediately
     switch ( name ) {
     case 'uiTheme':
-        uDom.setTheme(value, true);
+        setTheme(value, true);
         break;
     case 'uiAccentCustom':
     case 'uiAccentCustom0':
-        uDom.setAccentColor(
-            uDom.nodeFromSelector('[data-setting-name="uiAccentCustom"]').checked,
-            uDom.nodeFromSelector('[data-setting-name="uiAccentCustom0"]').value,
+        setAccentColor(
+            qs$('[data-setting-name="uiAccentCustom"]').checked,
+            qs$('[data-setting-name="uiAccentCustom0"]').value,
             true
         );
         break;
     default:
         break;
     }
-};
+}
 
 /******************************************************************************/
 
-const onValueChanged = function(ev) {
+function onValueChanged(ev) {
     const input = ev.target;
-    const name = this.getAttribute('data-setting-name');
+    const name = dom.attr(input, 'data-setting-name');
     let value = input.value;
     // Maybe sanitize value
     switch ( name ) {
@@ -246,45 +254,56 @@ const onValueChanged = function(ev) {
     }
 
     changeUserSettings(name, value);
-};
+}
 
 /******************************************************************************/
 
 // TODO: use data-* to declare simple settings
 
-const onUserSettingsReceived = function(details) {
-    const checkboxes = document.querySelectorAll('[data-setting-type="bool"]');
+function onUserSettingsReceived(details) {
+    const checkboxes = qsa$('[data-setting-type="bool"]');
+    const onchange = ev => {
+        const checkbox = ev.target;
+        const name = checkbox.dataset.settingName || '';
+        changeUserSettings(name, checkbox.checked);
+        synchronizeDOM();
+    };
     for ( const checkbox of checkboxes ) {
-        const name = checkbox.getAttribute('data-setting-name') || '';
+        const name = dom.attr(checkbox, 'data-setting-name') || '';
         if ( details[name] === undefined ) {
-            checkbox.closest('.checkbox').setAttribute('disabled', '');
-            checkbox.setAttribute('disabled', '');
+            dom.attr(checkbox.closest('.checkbox'), 'disabled', '');
+            dom.attr(checkbox, 'disabled', '');
             continue;
         }
         checkbox.checked = details[name] === true;
-        checkbox.addEventListener('change', ( ) => {
-            changeUserSettings(name, checkbox.checked);
-            synchronizeDOM();
-        });
+        dom.on(checkbox, 'change', onchange);
     }
 
     if ( details.canLeakLocalIPAddresses === true ) {
-        uDom('[data-setting-name="webrtcIPAddressHidden"]')
-            .ancestors('div.li')
-            .css('display', '');
+        qs$('[data-setting-name="webrtcIPAddressHidden"]')
+            .closest('div.li')
+            .style.display = '';
     }
 
-    uDom('[data-setting-type="value"]').forEach(function(uNode) {
-        uNode.val(details[uNode.attr('data-setting-name')])
-             .on('change', onValueChanged);
+    qsa$('[data-setting-type="value"]').forEach(function(elem) {
+        elem.value = details[dom.attr(elem, 'data-setting-name')];
+        dom.on(elem, 'change', onValueChanged);
     });
 
-    uDom('#export').on('click', ( ) => { exportToFile(); });
-    uDom('#import').on('click', startImportFilePicker);
-    uDom('#reset').on('click', resetUserData);
-    uDom('#restoreFilePicker').on('change', handleImportFilePicker);
+    dom.on('#export', 'click', ( ) => { exportToFile(); });
+    dom.on('#import', 'click', startImportFilePicker);
+    dom.on('#reset', 'click', resetUserData);
+    dom.on('#restoreFilePicker', 'change', handleImportFilePicker);
 
     synchronizeDOM();
+}
+
+/******************************************************************************/
+
+self.wikilink = 'https://github.com/gorhill/uBlock/wiki/Dashboard:-Settings';
+
+self.hasUnsavedData = function() {
+    return false;
 };
 
 /******************************************************************************/
@@ -298,13 +317,10 @@ vAPI.messaging.send('dashboard', { what: 'getLocalData' }).then(result => {
 });
 
 // https://github.com/uBlockOrigin/uBlock-issues/issues/591
-document.querySelector(
-    '[data-i18n-title="settingsAdvancedUserSettings"]'
-).addEventListener(
+dom.on(
+    '[data-i18n-title="settingsAdvancedUserSettings"]',
     'click',
     self.uBlockDashboard.openOrSelectPage
 );
 
 /******************************************************************************/
-
-})();

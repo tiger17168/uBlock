@@ -1,6 +1,6 @@
 /*******************************************************************************
 
-    uBlock Origin - a browser extension to block requests.
+    uBlock Origin - a comprehensive, efficient content blocker
     Copyright (C) 2014-present Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
@@ -19,17 +19,11 @@
     Home: https://github.com/gorhill/uBlock
 */
 
-'use strict';
-
-/******************************************************************************/
-
-import contextMenu from './contextmenu.js';
-import logger from './logger.js';
-import scriptletFilteringEngine from './scriptlet-filtering.js';
-import staticNetFilteringEngine from './static-net-filtering.js';
-import µb from './background.js';
-import webext from './webext.js';
-import { PageStore } from './pagestore.js';
+import {
+    domainFromHostname,
+    hostnameFromURI,
+    originFromURI,
+} from './uri-utils.js';
 
 import {
     sessionFirewall,
@@ -37,12 +31,13 @@ import {
     sessionURLFiltering,
 } from './filtering-engines.js';
 
-import {
-    domainFromHostname,
-    hostnameFromURI,
-    isNetworkURI,
-    originFromURI,
-} from './uri-utils.js';
+import { PageStore } from './pagestore.js';
+import contextMenu from './contextmenu.js';
+import { i18n$ } from './i18n.js';
+import logger from './logger.js';
+import staticNetFilteringEngine from './static-net-filtering.js';
+import webext from './webext.js';
+import µb from './background.js';
 
 /******************************************************************************/
 /******************************************************************************/
@@ -65,7 +60,7 @@ import {
         }
         try {
             tabURLNormalizer.href = tabURL;
-        } catch(ex) {
+        } catch {
             return tabURL;
         }
         const protocol = tabURLNormalizer.protocol.slice(0, -1);
@@ -141,12 +136,8 @@ const onPopupUpdated = (( ) => {
         // https://github.com/chrisaljoudi/uBlock/issues/1142
         // https://github.com/uBlockOrigin/uBlock-issues/issues/1616
         //   Don't block if uBO is turned off in popup's context
-        if (
-            µb.getNetFilteringSwitch(targetURL) === false ||
-            µb.getNetFilteringSwitch(µb.normalizeTabURL(0, targetURL)) === false
-        ) {
-            return 0;
-        }
+        if ( µb.isTrustedSite(targetURL) ) { return 0; }
+        if ( µb.isTrustedSite(µb.normalizeTabURL(0, targetURL)) ) { return 0; }
 
         fctxt.setTabOriginFromURL(rootOpenerURL)
              .setDocOriginFromURL(localOpenerURL || rootOpenerURL)
@@ -316,9 +307,24 @@ const onPopupUpdated = (( ) => {
         if ( tabContext === null ) { return; }
         const rootOpenerURL = tabContext.rawURL;
         if ( rootOpenerURL === '' ) { return; }
-        const localOpenerURL = openerDetails.frameId !== 0
+        const pageStore = µb.pageStoreFromTabId(openerTabId);
+
+        // https://github.com/uBlockOrigin/uBlock-issues/discussions/2534#discussioncomment-5264792
+        //   An `about:blank` frame's context is that of the parent context
+        let localOpenerURL = openerDetails.frameId !== 0
             ? openerDetails.frameURL
             : undefined;
+        if ( localOpenerURL === 'about:blank' && pageStore !== null ) {
+            let openerFrameId = openerDetails.frameId;
+            do {
+                const frame = pageStore.getFrameStore(openerFrameId);
+                if ( frame === null ) { break; }
+                openerFrameId = frame.parentId;
+                const parentFrame = pageStore.getFrameStore(openerFrameId);
+                if ( parentFrame === null ) { break; }
+                localOpenerURL = parentFrame.frameURL;
+            } while ( localOpenerURL === 'about:blank' && openerFrameId !== 0 );
+        }
 
         // Popup details.
         tabContext = µb.tabContextManager.lookup(targetTabId);
@@ -328,25 +334,14 @@ const onPopupUpdated = (( ) => {
 
         // https://github.com/gorhill/uBlock/issues/341
         //   Allow popups if uBlock is turned off in opener's context.
-        if ( µb.getNetFilteringSwitch(rootOpenerURL) === false ) { return; }
+        if ( µb.isTrustedSite(rootOpenerURL) ) { return; }
 
         // https://github.com/gorhill/uBlock/issues/1538
-        if (
-            µb.getNetFilteringSwitch(
-                µb.normalizeTabURL(openerTabId, rootOpenerURL)
-            ) === false
-        ) {
-            return;
-        }
+        if ( µb.isTrustedSite(µb.normalizeTabURL(openerTabId, rootOpenerURL)) ) { return; }
 
-        // If the page URL is that of our "blocked page" URL, extract the URL
+        // If the page URL is that of our document-blocked URL, extract the URL
         // of the page which was blocked.
-        if ( targetURL.startsWith(vAPI.getURL('document-blocked.html')) ) {
-            const matches = /details=([^&]+)/.exec(targetURL);
-            if ( matches !== null ) {
-                targetURL = JSON.parse(decodeURIComponent(matches[1])).url;
-            }
-        }
+        targetURL = µb.pageURLFromMaybeDocumentBlockedURL(targetURL);
 
         // MUST be reset before code below is called.
         const fctxt = µb.filteringContext.duplicate();
@@ -397,7 +392,6 @@ const onPopupUpdated = (( ) => {
 
         // Only if a popup was blocked do we report it in the dynamic
         // filtering pane.
-        const pageStore = µb.pageStoreFromTabId(openerTabId);
         if ( pageStore ) {
             pageStore.journalAddRequest(fctxt, result);
             pageStore.popupBlockedCount += 1;
@@ -506,25 +500,19 @@ housekeep itself.
                     ? µb.maybeGoodPopup.url
                     : ''
             };
-            this.selfDestructionTimer = null;
+            this.selfDestructionTimer = vAPI.defer.create(( ) => {
+                this.destroy();
+            });
             this.launchSelfDestruction();
         }
 
         destroy() {
-            if ( this.selfDestructionTimer !== null ) {
-                clearTimeout(this.selfDestructionTimer);
-            }
+            this.selfDestructionTimer.off();
             popupCandidates.delete(this.targetTabId);
         }
 
         launchSelfDestruction() {
-            if ( this.selfDestructionTimer !== null ) {
-                clearTimeout(this.selfDestructionTimer);
-            }
-            this.selfDestructionTimer = vAPI.setTimeout(
-                ( ) => this.destroy(),
-                10000
-            );
+            this.selfDestructionTimer.offon(10000);
         }
     };
 
@@ -571,18 +559,15 @@ housekeep itself.
                         frameId: sourceFrameId,
                     }),
                 ]);
-            }
-            catch (reason) {
+            } catch {
                 return;
             }
-            if (
-                Array.isArray(openerDetails) === false ||
-                openerDetails.length !== 2 ||
-                openerDetails[1] === null ||
-                openerDetails[1].url === 'about:newtab'
-            ) {
-                return;
-            }
+            if ( Array.isArray(openerDetails) === false ) { return; }
+            if ( openerDetails.length !== 2 ) { return; }
+            if ( openerDetails[1] === null ) { return; }
+            if ( openerDetails[1].url === 'about:newtab' ) { return; }
+            // https://github.com/uBlockOrigin/uBlock-issues/issues/2227
+            if ( openerDetails[1].url.startsWith('chrome:') ) { return; }
             popupCandidates.set(
                 tabId,
                 new PopupCandidate(createDetails, openerDetails)
@@ -609,39 +594,34 @@ housekeep itself.
         this.origin =
         this.rootHostname =
         this.rootDomain = '';
-        this.commitTimer = null;
-        this.gcTimer = null;
+        this.commitTimer = vAPI.defer.create(( ) => {
+            this.onCommit();
+        });
+        this.gcTimer = vAPI.defer.create(( ) => {
+            this.onGC();
+        });
         this.onGCBarrier = false;
-        this.netFiltering = true;
-        this.netFilteringReadTime = 0;
+        this.trustedStatus = false;
 
         tabContexts.set(tabId, this);
     };
 
     TabContext.prototype.destroy = function() {
         if ( vAPI.isBehindTheSceneTabId(this.tabId) ) { return; }
-        if ( this.gcTimer !== null ) {
-            clearTimeout(this.gcTimer);
-            this.gcTimer = null;
-        }
+        this.gcTimer.off();
         tabContexts.delete(this.tabId);
     };
 
     TabContext.prototype.onGC = async function() {
         if ( vAPI.isBehindTheSceneTabId(this.tabId) ) { return; }
-        // https://github.com/gorhill/uBlock/issues/1713
-        //   For unknown reasons, Firefox's setTimeout() will sometimes
-        //   causes the callback function to be called immediately, bypassing
-        //   the main event loop. For now this should prevent uBO from
-        //   crashing as a result of the bad setTimeout() behavior.
         if ( this.onGCBarrier ) { return; }
         this.onGCBarrier = true;
-        this.gcTimer = null;
+        this.gcTimer.off();
         const tab = await vAPI.tabs.get(this.tabId);
         if ( tab instanceof Object === false || tab.discarded === true ) {
             this.destroy();
         } else {
-            this.gcTimer = vAPI.setTimeout(( ) => this.onGC(), gcPeriod);
+            this.gcTimer.on(gcPeriod);
         }
         this.onGCBarrier = false;
     };
@@ -650,10 +630,8 @@ housekeep itself.
     // Stack entries have to be committed to stick. Non-committed stack
     // entries are removed after a set delay.
     TabContext.prototype.onCommit = function() {
-        if ( vAPI.isBehindTheSceneTabId(this.tabId) ) {
-            return;
-        }
-        this.commitTimer = null;
+        if ( vAPI.isBehindTheSceneTabId(this.tabId) ) { return; }
+        this.commitTimer.off();
         // Remove uncommitted entries at the top of the stack.
         let i = this.stack.length;
         while ( i-- ) {
@@ -678,13 +656,15 @@ housekeep itself.
     // want to flush it.
     TabContext.prototype.autodestroy = function() {
         if ( vAPI.isBehindTheSceneTabId(this.tabId) ) { return; }
-        this.gcTimer = vAPI.setTimeout(( ) => this.onGC(), gcPeriod);
+        this.gcTimer.on(gcPeriod);
     };
 
     // Update just force all properties to be updated to match the most recent
     // root URL.
+    // https://github.com/uBlockOrigin/uBlock-issues/issues/1954
+    //   In case of document-blocked page, use the blocked page URL as the
+    //   context.
     TabContext.prototype.update = function() {
-        this.netFilteringReadTime = 0;
         if ( this.stack.length === 0 ) {
             this.rawURL =
             this.normalURL =
@@ -694,7 +674,7 @@ housekeep itself.
             return;
         }
         const stackEntry = this.stack[this.stack.length - 1];
-        this.rawURL = stackEntry.url;
+        this.rawURL = µb.pageURLFromMaybeDocumentBlockedURL(stackEntry.url);
         this.normalURL = µb.normalizeTabURL(this.tabId, this.rawURL);
         this.origin = originFromURI(this.normalURL);
         this.rootHostname = hostnameFromURI(this.origin);
@@ -715,10 +695,7 @@ housekeep itself.
         this.stack.push(new StackEntry(url));
         this.update();
         popupCandidateTest(this.tabId);
-        if ( this.commitTimer !== null ) {
-            clearTimeout(this.commitTimer);
-        }
-        this.commitTimer = vAPI.setTimeout(( ) => this.onCommit(), 500);
+        this.commitTimer.offon(500);
     };
 
     // This tells that the url is definitely the one to be associated with the
@@ -735,22 +712,16 @@ housekeep itself.
         return true;
     };
 
-    TabContext.prototype.getNetFilteringSwitch = function() {
-        if ( this.netFilteringReadTime > µb.netWhitelistModifyTime ) {
-            return this.netFiltering;
-        }
+    TabContext.prototype.isNotTrusted = function() {
         // https://github.com/chrisaljoudi/uBlock/issues/1078
         // Use both the raw and normalized URLs.
-        this.netFiltering = µb.getNetFilteringSwitch(this.normalURL);
-        if (
-            this.netFiltering &&
-            this.rawURL !== this.normalURL &&
-            this.rawURL !== ''
-        ) {
-            this.netFiltering = µb.getNetFilteringSwitch(this.rawURL);
+        this.trustedStatus = µb.isTrustedSite(this.normalURL);
+        if ( this.trustedStatus === false ) {
+            if ( this.rawURL !== this.normalURL && this.rawURL !== '' ) {
+                this.trustedStatus = µb.isTrustedSite(this.rawURL);
+            }
         }
-        this.netFilteringReadTime = Date.now();
-        return this.netFiltering;
+        return this.trustedStatus === false;
     };
 
     // These are to be used for the API of the tab context manager.
@@ -918,6 +889,10 @@ vAPI.Tabs = class extends vAPI.Tabs {
     //   For non-network URIs, defer scriptlet injection to content script. The
     //   reason for this is that we need the effective URL and this information
     //   is not available at this point.
+    //
+    // https://github.com/uBlockOrigin/uBlock-issues/issues/2343
+    //   uBO's isolated world in Firefox just does not work as expected at
+    //   point, so we have to wait before injecting scriptlets.
     onNavigation(details) {
         super.onNavigation(details);
         const { frameId, tabId, url } = details;
@@ -931,13 +906,6 @@ vAPI.Tabs = class extends vAPI.Tabs {
         const pageStore = µb.pageStoreFromTabId(tabId);
         if ( pageStore === null ) { return; }
         pageStore.setFrameURL(details);
-        if (
-            µb.canInjectScriptletsNow &&
-            isNetworkURI(url) &&
-            pageStore.getNetFilteringSwitch()
-        ) {
-            scriptletFilteringEngine.injectNow(details);
-        }
     }
 
     async onNewTab(tabId) {
@@ -1042,26 +1010,29 @@ vAPI.tabs = new vAPI.Tabs();
 
 {
     const NoPageStore = class extends PageStore {
-        getNetFilteringSwitch(fctxt) {
+        isTrusted(fctxt) {
+            return this.isNotTrusted(fctxt) === false;
+        }
+        isNotTrusted(fctxt) {
             if ( fctxt ) {
                 const docOrigin = fctxt.getDocOrigin();
                 if ( docOrigin ) {
-                    return µb.getNetFilteringSwitch(docOrigin);
+                    return µb.isNotTrustedSite(docOrigin);
                 }
             }
-            return super.getNetFilteringSwitch();
+            return super.isNotTrusted();
         }
     };
     const pageStore = new NoPageStore(vAPI.noTabId);
     µb.pageStores.set(pageStore.tabId, pageStore);
-    pageStore.title = vAPI.i18n('logBehindTheScene');
+    pageStore.title = i18n$('logBehindTheScene');
 }
 
 /******************************************************************************/
 
 // Update visual of extension icon.
 
-µb.updateToolbarIcon = (( ) => {
+{
     const tabIdToDetails = new Map();
 
     const computeBadgeColor = (bits) => {
@@ -1091,7 +1062,7 @@ vAPI.tabs = new vAPI.Tabs();
 
         const pageStore = µb.pageStoreFromTabId(tabId);
         if ( pageStore !== null ) {
-            state = pageStore.getNetFilteringSwitch() ? 1 : 0;
+            state = pageStore.isNotTrusted() ? 1 : 0;
             if ( state === 1 ) {
                 if ( (parts & 0b0010) !== 0 ) {
                     const blockCount = pageStore.counts.blocked.any;
@@ -1120,7 +1091,8 @@ vAPI.tabs = new vAPI.Tabs();
     //        bit 2 = badge color
     //        bit 3 = hide badge
 
-    return function(tabId, newParts = 0b0111) {
+    µb.updateToolbarIcon = function(tabId, newParts = 0b0111) {
+        if ( this.readyToFilter === false ) { return; }
         if ( typeof tabId !== 'number' ) { return; }
         if ( vAPI.isBehindTheSceneTabId(tabId) ) { return; }
         const currentParts = tabIdToDetails.get(tabId);
@@ -1135,7 +1107,7 @@ vAPI.tabs = new vAPI.Tabs();
         }
         tabIdToDetails.set(tabId, newParts);
     };
-})();
+}
 
 /******************************************************************************/
 
@@ -1143,7 +1115,6 @@ vAPI.tabs = new vAPI.Tabs();
 //   Stale page store entries janitor
 
 {
-    const pageStoreJanitorPeriod = 15 * 60 * 1000;
     let pageStoreJanitorSampleAt = 0;
     let pageStoreJanitorSampleSize = 10;
 
@@ -1169,10 +1140,13 @@ vAPI.tabs = new vAPI.Tabs();
         }
         pageStoreJanitorSampleAt = n;
 
-        vAPI.setTimeout(pageStoreJanitor, pageStoreJanitorPeriod);
+        pageStoreJanitorTimer.on(pageStoreJanitorPeriod);
     };
 
-    vAPI.setTimeout(pageStoreJanitor, pageStoreJanitorPeriod);
+    const pageStoreJanitorTimer = vAPI.defer.create(pageStoreJanitor);
+    const pageStoreJanitorPeriod = { min: 15 };
+
+    pageStoreJanitorTimer.on(pageStoreJanitorPeriod);
 }
 
 /******************************************************************************/

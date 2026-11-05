@@ -8,11 +8,11 @@ echo "*** uBlock0.firefox: Creating web store package"
 
 BLDIR=dist/build
 DES="$BLDIR"/uBlock0.firefox
-rm -rf $DES
 mkdir -p $DES
+rm -rf $DES/*
 
 echo "*** uBlock0.firefox: Copying common files"
-bash ./tools/copy-common-files.sh  $DES
+bash ./tools/copy-common-files.sh $DES
 
 # Firefox-specific
 echo "*** uBlock0.firefox: Copying firefox-specific files"

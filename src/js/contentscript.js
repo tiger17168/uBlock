@@ -1,6 +1,6 @@
 /*******************************************************************************
 
-    uBlock Origin - a browser extension to block requests.
+    uBlock Origin - a comprehensive, efficient content blocker
     Copyright (C) 2014-present Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
@@ -18,8 +18,6 @@
 
     Home: https://github.com/gorhill/uBlock
 */
-
-'use strict';
 
 /*******************************************************************************
 
@@ -103,7 +101,7 @@
 //   https://github.com/chrisaljoudi/uBlock/issues/456
 //   https://github.com/gorhill/uBlock/issues/2029
 
- // >>>>>>>> start of HUGE-IF-BLOCK
+// >>>>>>>> start of HUGE-IF-BLOCK
 if ( typeof vAPI === 'object' && !vAPI.contentScript ) {
 
 /******************************************************************************/
@@ -127,7 +125,7 @@ vAPI.contentScript = true;
         ) {
             context = context.parent;
         }
-    } catch(ex) {
+    } catch {
     }
     vAPI.effectiveSelf = context;
 }
@@ -257,6 +255,7 @@ vAPI.SafeAnimationFrame = class {
     let timer;
 
     const send = function() {
+        if ( self.vAPI instanceof Object === false ) { return; }
         vAPI.messaging.send('scriptlets', {
             what: 'securityPolicyViolation',
             type: 'net',
@@ -301,7 +300,7 @@ vAPI.SafeAnimationFrame = class {
             timer = undefined;
         }
         document.removeEventListener('securitypolicyviolation', listener);
-        vAPI.shutdown.remove(stop);
+        if ( vAPI ) { vAPI.shutdown.remove(stop); }
     };
 
     document.addEventListener('securitypolicyviolation', listener);
@@ -361,7 +360,7 @@ vAPI.SafeAnimationFrame = class {
         if ( addedNodes.length === 0 && removedNodes === false ) { return; }
         for ( const listener of getListenerIterator() ) {
             try { listener.onDOMChanged(addedNodes, removedNodes); }
-            catch (ex) { }
+            catch { }
         }
         addedNodes.length = 0;
         removedNodes = false;
@@ -374,13 +373,11 @@ vAPI.SafeAnimationFrame = class {
         let i = mutations.length;
         while ( i-- ) {
             const mutation = mutations[i];
-            let nodeList = mutation.addedNodes;
-            if ( nodeList.length !== 0 ) {
-                addedNodeLists.push(nodeList);
-            }
-            nodeList = mutation.removedNodes;
-            if ( nodeList.length !== 0 ) {
-                removedNodeLists.push(nodeList);
+            if ( mutation.addedNodes.length !== 0 ) {
+                addedNodeLists.push(mutation.addedNodes);
+            } 
+            if ( mutation.removedNodes.length !== 0 ) {
+                removedNodeLists.push(mutation.removedNodes);
             }
         }
         if ( addedNodeLists.length !== 0 || removedNodeLists.length !== 0 ) {
@@ -394,8 +391,6 @@ vAPI.SafeAnimationFrame = class {
         if ( domLayoutObserver !== undefined ) { return; }
         domLayoutObserver = new MutationObserver(observerHandler);
         domLayoutObserver.observe(document, {
-            //attributeFilter: [ 'class', 'id' ],
-            //attributes: true,
             childList: true,
             subtree: true
         });
@@ -423,7 +418,7 @@ vAPI.SafeAnimationFrame = class {
         listenerIteratorDirty = true;
         if ( domLayoutObserver === undefined ) { return; }
         try { listener.onDOMCreated(); }
-        catch (ex) { }
+        catch { }
         startMutationObserver();
     };
 
@@ -451,32 +446,13 @@ vAPI.SafeAnimationFrame = class {
     const start = function() {
         for ( const listener of getListenerIterator() ) {
             try { listener.onDOMCreated(); }
-            catch (ex) { }
+            catch { }
         }
         startMutationObserver();
     };
 
     vAPI.domWatcher = { start, addListener, removeListener };
 }
-
-/******************************************************************************/
-/******************************************************************************/
-/******************************************************************************/
-
-vAPI.injectScriptlet = function(doc, text) {
-    if ( !doc ) { return; }
-    let script;
-    try {
-        script = doc.createElement('script');
-        script.appendChild(doc.createTextNode(text));
-        (doc.head || doc.documentElement || doc).appendChild(script);
-    } catch (ex) {
-    }
-    if ( script ) {
-        script.remove();
-        script.textContent = '';
-    }
-};
 
 /******************************************************************************/
 /******************************************************************************/
@@ -495,7 +471,6 @@ vAPI.DOMFilterer = class {
         this.commitTimer = new vAPI.SafeAnimationFrame(
             ( ) => { this.commitNow(); }
         );
-        this.domIsReady = document.readyState !== 'loading';
         this.disabled = false;
         this.listeners = [];
         this.stylesheets = [];
@@ -503,18 +478,6 @@ vAPI.DOMFilterer = class {
         this.exceptions = [];
         this.convertedProceduralFilters = [];
         this.proceduralFilterer = null;
-        // https://github.com/uBlockOrigin/uBlock-issues/issues/167
-        //   By the time the DOMContentLoaded is fired, the content script might
-        //   have been disconnected from the background page. Unclear why this
-        //   would happen, so far seems to be a Chromium-specific behavior at
-        //   launch time.
-        if ( this.domIsReady !== true ) {
-            document.addEventListener('DOMContentLoaded', ( ) => {
-                if ( vAPI instanceof Object === false ) { return; }
-                this.domIsReady = true;
-                this.commit();
-            });
-        }
     }
 
     explodeCSS(css) {
@@ -669,10 +632,13 @@ vAPI.DOMFilterer = class {
                     ...this.proceduralFilterer.selectors.values()
                 );
             }
-            for ( const json of this.convertedProceduralFilters ) {
-                out.procedural.push(
-                    this.proceduralFiltererInstance().createProceduralFilter(json)
-                );
+            const proceduralFilterer = this.proceduralFiltererInstance();
+            if ( proceduralFilterer !== null ) {
+                for ( const json of this.convertedProceduralFilters ) {
+                    const pfilter = proceduralFilterer.createProceduralFilter(json);
+                    pfilter.converted = true;
+                    out.procedural.push(pfilter);
+                }
             }
         }
         return out;
@@ -713,7 +679,7 @@ vAPI.DOMFilterer = class {
         object: 'object',
         video: 'media',
     };
-    let resquestIdGenerator = 1,
+    let requestIdGenerator = 1,
         processTimer,
         cachedBlockedSet,
         cachedBlockedSetHash,
@@ -807,10 +773,10 @@ vAPI.DOMFilterer = class {
 
     const send = function() {
         processTimer = undefined;
-        toCollapse.set(resquestIdGenerator, toProcess);
+        toCollapse.set(requestIdGenerator, toProcess);
         messaging.send('contentscript', {
             what: 'getCollapsibleBlockedRequests',
-            id: resquestIdGenerator,
+            id: requestIdGenerator,
             frameURL: window.location.href,
             resources: toFilter,
             hash: cachedBlockedSetHash,
@@ -819,7 +785,7 @@ vAPI.DOMFilterer = class {
         });
         toProcess = [];
         toFilter = [];
-        resquestIdGenerator += 1;
+        requestIdGenerator += 1;
     };
 
     const process = function(delay) {
@@ -958,72 +924,73 @@ vAPI.DOMFilterer = class {
 // vAPI.domSurveyor
 
 {
-    const messaging = vAPI.messaging;
-    const queriedIds = new Set();
-    const queriedClasses = new Set();
+    const queriedHashes = new Set();
+    const newHashes = new Set();
     const maxSurveyNodes = 65536;
-    const maxSurveyTimeSlice = 4;
-    const maxSurveyBuffer = 64;
+    const pendingLists = [];
+    const pendingNodes = [];
+    const processedSet = new Set();
+    const ignoreTags = Object.assign(Object.create(null), {
+        br: 1, head: 1, link: 1, meta: 1, script: 1, style: 1
+    });
+    let domObserver;
+    let domFilterer;
+    let hostname = '';
+    let domChanged = false;
+    let scannedCount = 0;
+    let stopped = false;
 
-    let domFilterer,
-        hostname = '',
-        surveyCost = 0;
+    // http://www.cse.yorku.ca/~oz/hash.html#djb2
+    //   Must mirror cosmetic filtering compiler's version
+    const hashFromStr = (type, s) => {
+        const len = s.length;
+        const step = len + 7 >>> 3;
+        let hash = (type << 5) + type ^ len;
+        for ( let i = 0; i < len; i += step ) {
+            hash = (hash << 5) + hash ^ s.charCodeAt(i);
+        }
+        return hash & 0xFFFFFF;
+    };
 
-    const pendingNodes = {
-        nodeLists: [],
-        buffer: [
-            null, null, null, null, null, null, null, null,
-            null, null, null, null, null, null, null, null,
-            null, null, null, null, null, null, null, null,
-            null, null, null, null, null, null, null, null,
-            null, null, null, null, null, null, null, null,
-            null, null, null, null, null, null, null, null,
-            null, null, null, null, null, null, null, null,
-            null, null, null, null, null, null, null, null,
-        ],
-        j: 0,
-        accepted: 0,
-        iterated: 0,
-        stopped: false,
-        add(nodes) {
-            if ( nodes.length === 0 || this.accepted >= maxSurveyNodes ) {
-                return;
+    const addHashes = hashes => {
+        for ( const hash of hashes ) {
+            queriedHashes.add(hash);
+        }
+    };
+
+    const qsa = (context, selector) =>
+        Array.from(context.querySelectorAll(selector));
+
+    const addPendingList = list => {
+        if ( list.length === 0 ) { return; }
+        pendingLists.push(list);
+    };
+
+    const nextPendingNodes = ( ) => {
+        if ( pendingLists.length === 0 ) { return 0; }
+        const bufferSize = 256;
+        let j = 0;
+        do {
+            const nodeList = pendingLists[0];
+            let n = bufferSize - j;
+            if ( n > nodeList.length ) {
+                n = nodeList.length;
             }
-            this.nodeLists.push(nodes);
-            this.accepted += nodes.length;
-        },
-        next() {
-            if ( this.nodeLists.length === 0 || this.stopped ) { return 0; }
-            const nodeLists = this.nodeLists;
-            let ib = 0;
-            do {
-                const nodeList = nodeLists[0];
-                let j = this.j;
-                let n = j + maxSurveyBuffer - ib;
-                if ( n > nodeList.length ) {
-                    n = nodeList.length;
-                }
-                for ( let i = j; i < n; i++ ) {
-                    this.buffer[ib++] = nodeList[j++];
-                }
-                if ( j !== nodeList.length ) {
-                    this.j = j;
-                    break;
-                }
-                this.j = 0;
-                this.nodeLists.shift();
-            } while ( ib < maxSurveyBuffer && nodeLists.length !== 0 );
-            this.iterated += ib;
-            if ( this.iterated >= maxSurveyNodes ) {
-                this.nodeLists = [];
-                this.stopped = true;
-                //console.info(`domSurveyor> Surveyed a total of ${this.iterated} nodes. Enough.`);
+            for ( let i = 0; i < n; i++ ) {
+                pendingNodes[j+i] = nodeList[i];
             }
-            return ib;
-        },
-        hasNodes() {
-            return this.nodeLists.length !== 0;
-        },
+            j += n;
+            if ( n !== nodeList.length ) {
+                pendingLists[0] = nodeList.slice(n);
+                break;
+            }
+            pendingLists.shift();
+        } while ( j < bufferSize && pendingLists.length !== 0 );
+        return j;
+    };
+
+    const hasPendingNodes = ( ) => {
+        return pendingLists.length !== 0 || newHashes.size !== 0 ;
     };
 
     // Extract all classes/ids: these will be passed to the cosmetic
@@ -1034,88 +1001,96 @@ vAPI.DOMFilterer = class {
     // http://www.w3.org/TR/2014/REC-html5-20141028/infrastructure.html#space-separated-tokens
     // http://jsperf.com/enumerate-classes/6
 
-    const idFromNode = (node, out) => {
+    const idFromNode = node => {
         const raw = node.id;
         if ( typeof raw !== 'string' || raw.length === 0 ) { return; }
-        const s = raw.trim();
-        if ( queriedIds.has(s) || s.length === 0 ) { return; }
-        out.push(s);
-        queriedIds.add(s);
+        const hash = hashFromStr(0x23 /* '#' */, raw.trim());
+        if ( queriedHashes.has(hash) ) { return; }
+        queriedHashes.add(hash);
+        newHashes.add(hash);
     };
 
     // https://github.com/uBlockOrigin/uBlock-issues/discussions/2076
     //   Performance: avoid using Element.classList
-    const classesFromNode = (node, out) => {
+    const classesFromNode = node => {
         const s = node.getAttribute('class');
         if ( typeof s !== 'string' ) { return; }
         const len = s.length;
-        for ( let beg = 0, end = 0, token = ''; beg < len; beg += 1 ) {
+        for ( let beg = 0, end = 0; beg < len; beg += 1 ) {
             end = s.indexOf(' ', beg);
             if ( end === beg ) { continue; }
             if ( end === -1 ) { end = len; }
-            token = s.slice(beg, end);
+            const token = s.slice(beg, end).trimEnd();
             beg = end;
-            if ( queriedClasses.has(token) ) { continue; }
-            out.push(token);
-            queriedClasses.add(token);
+            if ( token.length === 0 ) { continue; }
+            const hash = hashFromStr(0x2E /* '.' */, token);
+            if ( queriedHashes.has(hash) ) { continue; }
+            queriedHashes.add(hash);
+            newHashes.add(hash);
         }
     };
 
-    const surveyPhase1 = function() {
-        //console.time('dom surveyor/surveying');
+    const getSurveyResults = safeOnly => {
+        if ( Boolean(self.vAPI?.messaging) === false ) { return stop(); }
+        const promise = newHashes.size === 0
+            ? Promise.resolve(null)
+            : self.vAPI.messaging.send('contentscript', {
+                what: 'retrieveGenericCosmeticSelectors',
+                hostname,
+                hashes: Array.from(newHashes),
+                exceptions: domFilterer.exceptions,
+                safeOnly,
+            });
+        promise.then(response => {
+            processSurveyResults(response);
+        });
+        newHashes.clear();
+    };
+
+    const doSurvey = ( ) => {
         const t0 = performance.now();
-        const ids = [];
-        const classes = [];
-        const nodes = pendingNodes.buffer;
-        const deadline = t0 + maxSurveyTimeSlice;
-        let processed = 0;
+        const nodes = pendingNodes;
+        const deadline = t0 + 4;
+        let scanned = 0;
         for (;;) {
-            const n = pendingNodes.next();
+            const n = nextPendingNodes();
             if ( n === 0 ) { break; }
             for ( let i = 0; i < n; i++ ) {
                 const node = nodes[i]; nodes[i] = null;
-                idFromNode(node, ids);
-                classesFromNode(node, classes);
+                if ( domChanged ) {
+                    if ( processedSet.has(node) ) { continue; }
+                    processedSet.add(node);
+                }
+                idFromNode(node);
+                classesFromNode(node);
+                scanned += 1;
             }
-            processed += n;
             if ( performance.now() >= deadline ) { break; }
         }
-        const t1 = performance.now();
-        surveyCost += t1 - t0;
-        //console.info(`domSurveyor> Surveyed ${processed} nodes in ${(t1-t0).toFixed(2)} ms`);
-        // Phase 2: Ask main process to lookup relevant cosmetic filters.
-        if ( ids.length !== 0 || classes.length !== 0 ) {
-            messaging.send('contentscript', {
-                what: 'retrieveGenericCosmeticSelectors',
-                hostname,
-                ids, classes,
-                exceptions: domFilterer.exceptions,
-                cost: surveyCost,
-            }).then(response => {
-                surveyPhase3(response);
-            });
-        } else {
-            surveyPhase3(null);
+        scannedCount += scanned;
+        if ( scannedCount >= maxSurveyNodes ) {
+            stop();
         }
-        //console.timeEnd('dom surveyor/surveying');
+        processedSet.clear();
+        getSurveyResults();
     };
 
-    const surveyTimer = new vAPI.SafeAnimationFrame(surveyPhase1);
+    const surveyTimer = new vAPI.SafeAnimationFrame(doSurvey);
 
     // This is to shutdown the surveyor if result of surveying keeps being
     // fruitless. This is useful on long-lived web page. I arbitrarily
     // picked 5 minutes before the surveyor is allowed to shutdown. I also
     // arbitrarily picked 256 misses before the surveyor is allowed to
     // shutdown.
-    let canShutdownAfter = Date.now() + 300000,
-        surveyingMissCount = 0;
+    let canShutdownAfter = Date.now() + 300000;
+    let surveyResultMissCount = 0;
 
     // Handle main process' response.
 
-    const surveyPhase3 = function(response) {
+    const processSurveyResults = response => {
+        if ( stopped ) { return; }
         const result = response && response.result;
         let mustCommit = false;
-
         if ( result ) {
             const css = result.injectedCSS;
             if ( typeof css === 'string' && css.length !== 0 ) {
@@ -1127,99 +1102,96 @@ vAPI.DOMFilterer = class {
                 domFilterer.exceptCSSRules(selectors);
             }
         }
-
-        if ( pendingNodes.stopped === false ) {
-            if ( pendingNodes.hasNodes() ) {
-                surveyTimer.start(1);
-            }
-            if ( mustCommit ) {
-                surveyingMissCount = 0;
-                canShutdownAfter = Date.now() + 300000;
-                return;
-            }
-            surveyingMissCount += 1;
-            if ( surveyingMissCount < 256 || Date.now() < canShutdownAfter ) {
-                return;
-            }
+        if ( hasPendingNodes() ) {
+            surveyTimer.start(1);
         }
-
-        //console.info('dom surveyor shutting down: too many misses');
-
-        surveyTimer.clear();
-        vAPI.domWatcher.removeListener(domWatcherInterface);
-        vAPI.domSurveyor = null;
+        if ( mustCommit ) {
+            surveyResultMissCount = 0;
+            canShutdownAfter = Date.now() + 300000;
+            return;
+        }
+        surveyResultMissCount += 1;
+        if ( surveyResultMissCount < 256 || Date.now() < canShutdownAfter ) {
+            return;
+        }
+        //console.info(`[domSurveyor][${hostname}] Shutting down, too many misses`);
+        stop();
+        self.vAPI.messaging.send('contentscript', {
+            what: 'disableGenericCosmeticFilteringSurveyor',
+            hostname,
+        });
     };
 
-    const domWatcherInterface = {
-        onDOMCreated: function() {
-            if (
-                self.vAPI instanceof Object === false ||
-                vAPI.domSurveyor instanceof Object === false ||
-                vAPI.domFilterer instanceof Object === false
-            ) {
-                if ( self.vAPI instanceof Object ) {
-                    if ( vAPI.domWatcher instanceof Object ) {
-                        vAPI.domWatcher.removeListener(domWatcherInterface);
-                    }
-                    vAPI.domSurveyor = null;
+    const onDomChanged = mutations => {
+        domChanged = true;
+        for ( const mutation of mutations ) {
+            if ( mutation.type === 'childList' ) {
+                const { addedNodes } = mutation;
+                if ( addedNodes.length === 0 ) { continue; }
+                for ( const node of addedNodes ) {
+                    if ( node.nodeType !== 1 ) { continue; }
+                    if ( ignoreTags[node.localName] ) { continue; }
+                    if ( node.parentElement === null ) { continue; }
+                    addPendingList([ node ]);
+                    if ( node.firstElementChild === null ) { continue; }
+                    addPendingList(qsa(node, '[id],[class]'));
                 }
-                return;
+            } else if ( mutation.attributeName === 'class' ) {
+                classesFromNode(mutation.target);
+            } else {
+                idFromNode(mutation.target);
             }
-            //console.time('dom surveyor/dom layout created');
-            domFilterer = vAPI.domFilterer;
-            pendingNodes.add(document.querySelectorAll(
-                '[id]:not(html):not(body),[class]:not(html):not(body)'
-            ));
+        }
+        if ( hasPendingNodes() ) {
             surveyTimer.start();
-            // https://github.com/uBlockOrigin/uBlock-issues/issues/1692
-            //   Look-up safe-only selectors to mitigate probability of
-            //   html/body elements of erroneously being targeted.
-            const ids = [], classes = [];
-            if ( document.documentElement !== null ) {
-                idFromNode(document.documentElement, ids);
-                classesFromNode(document.documentElement, classes);
-            }
-            if ( document.body !== null ) {
-                idFromNode(document.body, ids);
-                classesFromNode(document.body, classes);
-            }
-            if ( ids.length !== 0 || classes.length !== 0 ) {
-                messaging.send('contentscript', {
-                    what: 'retrieveGenericCosmeticSelectors',
-                    hostname,
-                    ids, classes,
-                    exceptions: domFilterer.exceptions,
-                    safeOnly: true,
-                }).then(response => {
-                    surveyPhase3(response);
-                });
-            }
-            //console.timeEnd('dom surveyor/dom layout created');
-        },
-        onDOMChanged: function(addedNodes) {
-            if ( addedNodes.length === 0 ) { return; }
-            //console.time('dom surveyor/dom layout changed');
-            for ( const node of addedNodes ) {
-                pendingNodes.add([ node ]);
-                if ( node.firstElementChild === null ) { continue; }
-                pendingNodes.add(node.querySelectorAll(
-                    '[id]:not(html):not(body),[class]:not(html):not(body)'
-                ));
-            }
-            if ( pendingNodes.hasNodes() ) {
-                surveyTimer.start(1);
-            }
-            //console.timeEnd('dom surveyor/dom layout changed');
         }
     };
 
-    const start = function(details) {
-        if ( vAPI.domWatcher instanceof Object === false ) { return; }
+    const start = details => {
+        if ( Boolean(self.vAPI?.domFilterer) === false ) { return stop(); }
         hostname = details.hostname;
-        vAPI.domWatcher.addListener(domWatcherInterface);
+        domFilterer = vAPI.domFilterer;
+        // https://github.com/uBlockOrigin/uBlock-issues/issues/1692
+        //   Look-up safe-only selectors to mitigate probability of
+        //   html/body elements of erroneously being targeted.
+        if ( document.documentElement !== null ) {
+            idFromNode(document.documentElement);
+            classesFromNode(document.documentElement);
+        }
+        if ( document.body !== null ) {
+            idFromNode(document.body);
+            classesFromNode(document.body);
+        }
+        if ( newHashes.size !== 0 ) {
+            getSurveyResults(newHashes, true);
+        }
+        addPendingList(qsa(document, '[id],[class]'));
+        if ( hasPendingNodes() ) {
+            surveyTimer.start();
+        }
+        domObserver = new MutationObserver(onDomChanged);
+        domObserver.observe(document, {
+            attributeFilter: [ 'class', 'id' ],
+            attributes: true,
+            childList: true,
+            subtree: true
+        });
     };
 
-    vAPI.domSurveyor = { start };
+    const stop = ( ) => {
+        stopped = true;
+        pendingLists.length = 0;
+        surveyTimer.clear();
+        if ( domObserver ) {
+            domObserver.disconnect();
+            domObserver = undefined;
+        }
+        if ( self.vAPI?.domSurveyor ) {
+            self.vAPI.domSurveyor = null;
+        }
+    };
+
+    self.vAPI.domSurveyor = { start, addHashes };
 }
 
 /******************************************************************************/
@@ -1231,7 +1203,7 @@ vAPI.DOMFilterer = class {
 //   to be launched if/when needed.
 
 {
-    const bootstrapPhase2 = function() {
+    const onDomReady = ( ) => {
         // This can happen on Firefox. For instance:
         // https://github.com/gorhill/uBlock/issues/1893
         if ( window.location === null ) { return; }
@@ -1240,6 +1212,10 @@ vAPI.DOMFilterer = class {
         vAPI.messaging.send('contentscript', {
             what: 'shouldRenderNoscriptTags',
         });
+
+        if ( vAPI.domFilterer instanceof Object ) {
+            vAPI.domFilterer.commitNow();
+        }
 
         if ( vAPI.domWatcher instanceof Object ) {
             vAPI.domWatcher.start();
@@ -1288,9 +1264,8 @@ vAPI.DOMFilterer = class {
     //   an object -- let's stay around, we may be given the opportunity
     //   to try bootstrapping again later.
 
-    const bootstrapPhase1 = function(response) {
+    const onResponseReady = response => {
         if ( response instanceof Object === false ) { return; }
-
         vAPI.bootstrap = undefined;
 
         // cosmetic filtering engine aka 'cfe'
@@ -1306,7 +1281,6 @@ vAPI.DOMFilterer = class {
         const {
             noSpecificCosmeticFiltering,
             noGenericCosmeticFiltering,
-            scriptlets,
         } = response;
 
         vAPI.noSpecificCosmeticFiltering = noSpecificCosmeticFiltering;
@@ -1317,7 +1291,7 @@ vAPI.DOMFilterer = class {
             vAPI.domSurveyor = null;
         } else {
             const domFilterer = vAPI.domFilterer = new vAPI.DOMFilterer();
-            if ( noGenericCosmeticFiltering || cfeDetails.noDOMSurveying ) {
+            if ( noGenericCosmeticFiltering || cfeDetails.disableSurveyor ) {
                 vAPI.domSurveyor = null;
             }
             domFilterer.exceptions = cfeDetails.exceptionFilters;
@@ -1325,45 +1299,30 @@ vAPI.DOMFilterer = class {
             domFilterer.addProceduralSelectors(cfeDetails.proceduralFilters);
             domFilterer.exceptCSSRules(cfeDetails.exceptedFilters);
             domFilterer.convertedProceduralFilters = cfeDetails.convertedProceduralFilters;
+            vAPI.userStylesheet.apply();
         }
 
-        vAPI.userStylesheet.apply();
-
-        // Library of resources is located at:
-        // https://github.com/gorhill/uBlock/blob/master/assets/ublock/resources.txt
-        if ( scriptlets ) {
-            vAPI.injectScriptlet(document, scriptlets);
-            vAPI.injectedScripts = scriptlets;
-        }
-
-        if ( vAPI.domSurveyor instanceof Object ) {
+        if ( vAPI.domSurveyor ) {
+            if ( Array.isArray(cfeDetails.genericCosmeticHashes) ) {
+                vAPI.domSurveyor.addHashes(cfeDetails.genericCosmeticHashes);
+            }
             vAPI.domSurveyor.start(cfeDetails);
         }
 
-        // https://github.com/chrisaljoudi/uBlock/issues/587
-        // If no filters were found, maybe the script was injected before
-        // uBlock's process was fully initialized. When this happens, pages
-        // won't be cleaned right after browser launch.
-        if (
-            typeof document.readyState === 'string' &&
-            document.readyState !== 'loading'
-        ) {
-            bootstrapPhase2();
-        } else {
-            document.addEventListener(
-                'DOMContentLoaded',
-                bootstrapPhase2,
-                { once: true }
-            );
+        const readyState = document.readyState;
+        if ( readyState === 'interactive' || readyState === 'complete' ) {
+            return onDomReady();
         }
+        document.addEventListener('DOMContentLoaded', onDomReady, { once: true });
     };
 
     vAPI.bootstrap = function() {
         vAPI.messaging.send('contentscript', {
             what: 'retrieveContentScriptParameters',
             url: vAPI.effectiveSelf.location.href,
+            realURL: document.location.href,
         }).then(response => {
-            bootstrapPhase1(response);
+            onResponseReady(response);
         });
     };
 }
